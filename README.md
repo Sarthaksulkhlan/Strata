@@ -33,6 +33,12 @@ These are real local captures of the current frontend, made from the Vite develo
 ## Architecture
 
 <p align="center">
+  <img src="docs/assets/strata-system-architecture.svg" alt="STRATA system architecture from frontend to read-only aggregate API" width="100%" />
+</p>
+
+The frontend and analytics service are deliberately separate. The public frontend owns presentation and typed request handling; the local aggregate API owns reviewed-output access and CORS enforcement. The analytical pipeline and proprietary raw source records remain outside this repository and outside the browser.
+
+<p align="center">
   <img src="docs/assets/strata-frontend-map.svg" alt="STRATA frontend component architecture" width="100%" />
 </p>
 
