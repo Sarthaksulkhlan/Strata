@@ -1,0 +1,6 @@
+{
+  "name": "WEAVE — Cricket Intelligence Platform",
+  "description": "Interactive cricket intelligence and player pressure evaluation platform for the Rajasthan Royals SupeRR Selector Season 2 hackathon.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
