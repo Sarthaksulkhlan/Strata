@@ -22,6 +22,14 @@ STRATA is a Vite, React and TypeScript frontend that turns verified aggregate re
 | Match Lab | Intentionally unavailable | No approved output supports simulations or tactical recommendations. |
 | Auction intelligence, valuations and eligibility | Intentionally disabled | These claims are not exposed by the aggregate API. |
 
+## Landing page captures
+
+These are real local captures of the current frontend, made from the Vite development server on 14 November 2026. They document the existing landing experience and responsive composition; they are not synthetic mockups or representations of unpublished analytics.
+
+| Desktop landing page | Mobile landing page |
+| --- | --- |
+| <img src="docs/screenshots/landing-desktop.png" alt="STRATA landing page at desktop width" width="100%" /> | <img src="docs/screenshots/landing-mobile.png" alt="STRATA landing page at mobile width" width="260" /> |
+
 ## Architecture
 
 <p align="center">
