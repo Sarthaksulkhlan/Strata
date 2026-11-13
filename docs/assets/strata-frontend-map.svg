@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+  <title id="title">STRATA frontend component map</title>
+  <desc id="desc">A component tree of the STRATA frontend, highlighting API-backed rankings and methodology surfaces.</desc>
+  <defs><style>.t{font:700 17px Arial,sans-serif;fill:#0A1128}.s{font:13px Arial,sans-serif;fill:#475569}.m{font:600 11px monospace;letter-spacing:.08em;fill:#1D4ED8}.box{fill:#F7F4EE;stroke:#0A1128;stroke-opacity:.18;stroke-width:1.5}.api{fill:#E8F0FF;stroke:#1D4ED8;stroke-width:1.7}.line{stroke:#94A3B8;stroke-width:1.5}</style></defs>
+  <rect width="1200" height="500" rx="24" fill="#F7F4EE"/>
+  <text x="54" y="55" class="m">STRATA / FRONTEND COMPONENT MAP</text><text x="54" y="89" class="t" style="font-size:27px">One visual narrative, clearly bounded evidence surfaces</text>
+  <path class="line" d="M600 170V205M180 205H1020M180 205V250M390 205V250M600 205V250M810 205V250M1020 205V250"/>
+  <rect x="475" y="125" width="250" height="45" rx="12" class="box"/><text x="500" y="153" class="t">App / WeavePrototypeApp</text>
+  <g><rect x="55" y="250" width="250" height="130" rx="14" class="box"/><text x="78" y="281" class="t">Narrative canvas</text><text x="78" y="306" class="s">HeroSection</text><text x="78" y="328" class="s">PinnedStorytelling</text><text x="78" y="350" class="s">InteractiveBackground</text></g>
+  <g><rect x="335" y="250" width="220" height="130" rx="14" class="box"/><text x="358" y="281" class="t">Data landscape</text><text x="358" y="306" class="s">EcosystemSection</text><text x="358" y="328" class="s">DataLandscapeCanvas</text><text x="358" y="350" class="s">Scroll progress hook</text></g>
+  <g><rect x="585" y="250" width="220" height="130" rx="14" class="api"/><text x="608" y="281" class="t">Verified rankings</text><text x="608" y="306" class="m">API-BACKED</text><text x="608" y="331" class="s">Batting + bowling Top 10</text><text x="608" y="353" class="s">Aggregate player evidence</text></g>
+  <g><rect x="835" y="250" width="310" height="130" rx="14" class="api"/><text x="858" y="281" class="t">Methodology and boundaries</text><text x="858" y="306" class="m">API-BACKED / INTENTIONAL LIMITS</text><text x="858" y="331" class="s">Reviewed methodology sections</text><text x="858" y="353" class="s">Match Lab and auction: unavailable</text></g>
+  <path class="line" d="M695 380V420H910M990 380V420H910"/><rect x="785" y="420" width="250" height="42" rx="12" class="api"/><text x="808" y="446" class="t">Typed ClutchIQ API client</text>
+</svg>
