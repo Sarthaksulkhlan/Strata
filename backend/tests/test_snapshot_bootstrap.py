@@ -41,5 +41,7 @@ class SnapshotBootstrapTests(unittest.TestCase):
 
     def test_failure_does_not_include_token(self):
         with patch("urllib.request.urlopen", side_effect=OSError("network unavailable")):
-            with self.assertRaises(SnapshotBootstrapError) as error: bootstrap_snapshot()
+            with self.assertLogs("clutchiq.snapshot_bootstrap", level="ERROR") as logs:
+                with self.assertRaises(SnapshotBootstrapError) as error: bootstrap_snapshot()
         self.assertNotIn(self.env["SNAPSHOT_GITHUB_TOKEN"], str(error.exception))
+        self.assertNotIn(self.env["SNAPSHOT_GITHUB_TOKEN"], "\n".join(logs.output))

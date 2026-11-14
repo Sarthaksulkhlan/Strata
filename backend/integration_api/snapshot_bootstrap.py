@@ -4,11 +4,14 @@ import os
 import re
 import shutil
 import tempfile
+import logging
 import urllib.request
 import zipfile
 from pathlib import Path
 
 from integration_api.service import SnapshotError, validate_snapshot
+
+LOGGER = logging.getLogger("clutchiq.snapshot_bootstrap")
 
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{40,64}$")
@@ -45,14 +48,28 @@ def bootstrap_snapshot() -> Path:
     with tempfile.TemporaryDirectory(dir=staging_parent, prefix="snapshot-stage-") as temporary:
         temporary_root = Path(temporary); archive_path = temporary_root / "snapshot.zip"; staging = temporary_root / "payload"; staging.mkdir()
         try:
+            LOGGER.info("snapshot bootstrap: downloading pinned archive")
             with urllib.request.urlopen(request, timeout=60) as response, archive_path.open("wb") as target: shutil.copyfileobj(response, target)
+            LOGGER.info("snapshot bootstrap: extracting approved snapshot")
             with zipfile.ZipFile(archive_path) as archive:
                 candidates = [member.filename for member in archive.infolist() if member.filename.endswith("/phase7a_v2_a/manifest.json")]
                 if len(candidates) != 1: raise SnapshotBootstrapError("Snapshot archive layout is invalid.")
                 prefix = candidates[0][:-len("manifest.json")]
                 _safe_extract(archive, prefix, staging)
+            LOGGER.info("snapshot bootstrap: validating complete manifest")
             validate_snapshot(staging)
-        except (OSError, zipfile.BadZipFile, SnapshotError, urllib.error.URLError) as error:
+            LOGGER.info("snapshot bootstrap: manifest validation passed")
+        except urllib.error.HTTPError as error:
+            LOGGER.error("snapshot bootstrap: download failed with HTTP status %s", error.code)
+            raise SnapshotBootstrapError("Snapshot retrieval or integrity validation failed.") from error
+        except urllib.error.URLError as error:
+            LOGGER.error("snapshot bootstrap: download failed due to a network error")
+            raise SnapshotBootstrapError("Snapshot retrieval or integrity validation failed.") from error
+        except SnapshotError as error:
+            LOGGER.error("snapshot bootstrap: manifest validation failed")
+            raise SnapshotBootstrapError("Snapshot retrieval or integrity validation failed.") from error
+        except (OSError, zipfile.BadZipFile) as error:
+            LOGGER.error("snapshot bootstrap: extraction failed (%s)", type(error).__name__)
             raise SnapshotBootstrapError("Snapshot retrieval or integrity validation failed.") from error
         if output.exists(): shutil.rmtree(output)
         staging.replace(output)
@@ -60,6 +77,7 @@ def bootstrap_snapshot() -> Path:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try: bootstrap_snapshot()
     except SnapshotBootstrapError as error: raise SystemExit(str(error))
 
