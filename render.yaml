@@ -22,13 +22,9 @@ services:
     name: strata-aggregate-api
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn integration_api.app:app --host 0.0.0.0 --port $PORT
+    startCommand: bash start.sh
     healthCheckPath: /healthz
     autoDeployTrigger: checksPass
-    disk:
-      name: reviewed-output-snapshot
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.10
@@ -36,4 +32,10 @@ services:
       - key: CLUTCHIQ_CORS_ORIGINS
         sync: false
       - key: CLUTCHIQ_OUTPUT_SNAPSHOT
+        sync: false
+      - key: SNAPSHOT_GITHUB_REPOSITORY
+        sync: false
+      - key: SNAPSHOT_GITHUB_REF
+        sync: false
+      - key: SNAPSHOT_GITHUB_TOKEN
         sync: false
