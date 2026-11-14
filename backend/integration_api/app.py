@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from functools import lru_cache
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from integration_api.live_console import router as live_router, expire_jobs
 
 from integration_api.service import ALLOWED_DEFINITIONS, ALLOWED_ROLES, SnapshotError, SnapshotStore, configured_snapshot_root
 
@@ -24,8 +27,27 @@ def store() -> SnapshotStore:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="ClutchIQ Aggregate API", version="1.0.0", docs_url=None, redoc_url=None)
-    app.add_middleware(CORSMiddleware, allow_origins=cors_origins(), allow_credentials=False, allow_methods=["GET"], allow_headers=["Accept", "Content-Type"], max_age=600)
+    @asynccontextmanager
+    async def lifespan(_):
+        cleanup_task = asyncio.create_task(expire_jobs())
+        try:
+            yield
+        finally:
+            cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup_task
+
+    app = FastAPI(title="ClutchIQ Aggregate API", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+    app.add_middleware(CORSMiddleware, allow_origins=cors_origins(), allow_credentials=False, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Accept", "Content-Type", "X-Analysis-Token"], max_age=600)
+    app.include_router(live_router)
+
+    @app.middleware("http")
+    async def private_live_responses(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith('/api/v1/live'):
+            response.headers['Cache-Control'] = 'no-store'
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+        return response
 
     @app.exception_handler(SnapshotError)
     async def snapshot_error(_: Request, __: SnapshotError):
