@@ -10,6 +10,7 @@ import { TypometerExperience } from './TypometerExperience';
 interface HeroSectionProps {
   onEnterStorytelling: () => void;
   onExploreRankings: () => void;
+  onOpenLiveConsole?: () => void;
 }
 
 // Complete one full 4-stage cycle (25% RAW -> 50% CONTEXT -> 75% PRESSURE -> 100% INTELLIGENCE) in ~2.6 seconds (650ms per stage)
@@ -24,6 +25,7 @@ const STATIC_HERO_SPECS = [
 export const HeroSection: React.FC<HeroSectionProps> = ({
   onEnterStorytelling,
   onExploreRankings,
+  onOpenLiveConsole,
 }) => {
   // Typometer automatic fast-looping 4-stage progression state (0: 25% RAW, 1: 50% CONTEXT, 2: 75% PRESSURE, 3: 100% INTELLIGENCE)
   const [typometerStageIndex, setTypometerStageIndex] = useState<0 | 1 | 2 | 3>(0);
@@ -260,6 +262,18 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
         >
           {/* Functional Action Buttons + "Scroll down for more details" */}
           <div className="flex flex-wrap items-center gap-2.5">
+            {onOpenLiveConsole && (
+              <button
+                type="button"
+                onClick={onOpenLiveConsole}
+                data-testid="hero-open-live-console-btn"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-[#1D4ED8] text-[#F7F4EE] text-xs sm:text-sm font-mono-tabular font-bold hover:bg-[#2563EB] transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <span>OPEN LIVE CONSOLE</span>
+                <ArrowDownRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+
             <button
               type="button"
               onClick={onEnterStorytelling}

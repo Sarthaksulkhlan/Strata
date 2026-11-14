@@ -6,8 +6,22 @@ from functools import lru_cache
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
+from integration_api.live_analysis import (
+    get_job_results,
+    get_job_status,
+    start_analysis_job,
+    validate_csv_payload,
+)
 from integration_api.service import ALLOWED_DEFINITIONS, ALLOWED_ROLES, SnapshotError, SnapshotStore, configured_snapshot_root
+
+
+class CsvUploadPayload(BaseModel):
+    filename: str
+    file_size: int = 0
+    csv_content: str
+    synchronous: bool = False
 
 
 def cors_origins() -> list[str]:
@@ -25,7 +39,7 @@ def store() -> SnapshotStore:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="ClutchIQ Aggregate API", version="1.0.0", docs_url=None, redoc_url=None)
-    app.add_middleware(CORSMiddleware, allow_origins=cors_origins(), allow_credentials=False, allow_methods=["GET"], allow_headers=["Accept", "Content-Type"], max_age=600)
+    app.add_middleware(CORSMiddleware, allow_origins=cors_origins(), allow_credentials=False, allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Accept", "Content-Type"], max_age=600)
 
     @app.exception_handler(SnapshotError)
     async def snapshot_error(_: Request, __: SnapshotError):
@@ -59,8 +73,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/pressure/definitions")
     def definitions(role: str | None = None, definition: str | None = None):
-        if role is not None and role not in ALLOWED_ROLES: raise HTTPException(status_code=400, detail="Invalid role.")
-        if definition is not None and definition not in ALLOWED_DEFINITIONS: raise HTTPException(status_code=400, detail="Invalid definition.")
+        if role not in (None, *ALLOWED_ROLES): raise HTTPException(status_code=400, detail="Invalid role.")
+        if definition not in (None, *ALLOWED_DEFINITIONS): raise HTTPException(status_code=400, detail="Invalid definition.")
         return get_store().definitions(role, definition)
 
     @app.get("/api/v1/methodology")
@@ -68,6 +82,49 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/match-lab")
     def match_lab(): raise HTTPException(status_code=503, detail="Match Lab is unavailable because no approved analytical output supports it.")
+
+    @app.post("/api/v1/live-console/validate")
+    def live_console_validate(payload: CsvUploadPayload):
+        size = payload.file_size or len(payload.csv_content.encode("utf-8"))
+        result = validate_csv_payload(payload.filename, payload.csv_content)
+        result["file_size"] = size
+        if not result["valid"]:
+            return JSONResponse(status_code=422, content={"data": result, "error": {"message": result["error"]}})
+        return {"data": result}
+
+    @app.post("/api/v1/live-console/jobs")
+    def live_console_create_job(payload: CsvUploadPayload):
+        size = payload.file_size or len(payload.csv_content.encode("utf-8"))
+        try:
+            job = start_analysis_job(
+                payload.filename,
+                size,
+                payload.csv_content,
+                synchronous=payload.synchronous,
+            )
+            return {"data": job}
+        except ValueError as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+
+    @app.get("/api/v1/live-console/jobs/{job_id}")
+    def live_console_job_status(job_id: str):
+        status = get_job_status(job_id)
+        if status is None:
+            raise HTTPException(status_code=404, detail="Analysis job not found.")
+        return {"data": status}
+
+    @app.get("/api/v1/live-console/jobs/{job_id}/results")
+    def live_console_job_results(job_id: str):
+        status = get_job_status(job_id)
+        if status is None:
+            raise HTTPException(status_code=404, detail="Analysis job not found.")
+        if status["status"] == "failed":
+            raise HTTPException(status_code=422, detail=status.get("error") or "Analysis job failed.")
+        results = get_job_results(job_id)
+        if results is None:
+            raise HTTPException(status_code=409, detail="Analysis job is still in progress.")
+        return {"data": results}
+
     return app
 
 
