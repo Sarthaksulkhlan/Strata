@@ -88,6 +88,10 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
       className="relative z-10 flex flex-col justify-between border-b border-[#0A1128]/12 pt-2 pb-4 lg:py-3"
     >
       <div className="max-w-[1380px] mx-auto w-full px-4 sm:px-6 lg:px-10 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+          <p className="text-sm text-[#475569]">Bring your own cricket data. Inspect every layer.</p>
+          <a href="#live-console" className="inline-flex items-center gap-2 px-5 py-3 bg-[#0A1128] text-[#F7F4EE] text-sm font-medium hover:bg-[#1D4ED8] transition-colors"><Upload size={16}/>Open Live Console</a>
+        </div>
         {/* Compact Top Architectural Metadata Ribbon (Shifted Upward) */}
         <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#0A1128]/12 text-[11px] font-mono-tabular text-[#334155]">
           <div className="flex items-center gap-2">
