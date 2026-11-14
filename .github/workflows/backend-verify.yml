@@ -14,3 +14,4 @@ jobs:
           python-version: '3.12'
       - run: pip install -r backend/requirements.txt
       - run: python -m compileall -q backend/integration_api
+      - run: python -m unittest discover -s backend/tests -q
