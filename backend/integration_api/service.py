@@ -16,25 +16,29 @@ REVIEW_STATUS = "phase_7b_reviewed"
 class SnapshotError(RuntimeError): pass
 
 
+def validate_snapshot(root: Path) -> None:
+    """Validate every artifact named by the immutable approved manifest."""
+    root = root.resolve(); manifest_path = root / "manifest.json"
+    if not manifest_path.is_file(): raise SnapshotError("Approved output manifest is unavailable.")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifacts = manifest.get("artifacts", {})
+    if not artifacts: raise SnapshotError("Approved output manifest is invalid.")
+    for relative_path, expected_hash in artifacts.items():
+        candidate = (root / relative_path).resolve()
+        if root not in candidate.parents or not candidate.is_file(): raise SnapshotError("Approved output snapshot failed integrity validation.")
+        if hashlib.sha256(candidate.read_bytes()).hexdigest() != expected_hash: raise SnapshotError("Approved output snapshot failed integrity validation.")
+
+
 class SnapshotStore:
     """Loads reviewed aggregate artifacts and never returns raw source records."""
     def __init__(self, root: Path):
-        self.root = root.resolve(); self._validate_manifest(); self.summary = self._read_json("summary.json")
+        self.root = root.resolve(); validate_snapshot(self.root); self.summary = self._read_json("summary.json")
         self.coverage = pd.read_csv(self.root / "candidate_coverage.csv.gz")
         self.sensitivity = pd.read_csv(self.root / "ranking_sensitivity.csv.gz")
         self.thresholds = pd.read_csv(self.root / "pressure_thresholds.csv.gz")
         self.evaluations = {(role, definition): pd.read_csv(self.root / role / f"{definition}_evaluations.csv.gz") for role in ALLOWED_ROLES for definition in ALLOWED_DEFINITIONS}
 
     def _read_json(self, name: str) -> dict[str, Any]: return json.loads((self.root / name).read_text(encoding="utf-8"))
-
-    def _validate_manifest(self) -> None:
-        manifest_path = self.root / "manifest.json"
-        if not manifest_path.is_file(): raise SnapshotError("Approved output manifest is unavailable.")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        for relative_path, expected_hash in manifest.get("artifacts", {}).items():
-            candidate = (self.root / relative_path).resolve()
-            if self.root not in candidate.parents or not candidate.is_file(): raise SnapshotError("Approved output snapshot failed integrity validation.")
-            if hashlib.sha256(candidate.read_bytes()).hexdigest() != expected_hash: raise SnapshotError("Approved output snapshot failed integrity validation.")
 
     @staticmethod
     def _record_count(source_records: object) -> int: return len(str(source_records).split(";")) if pd.notna(source_records) else 0
