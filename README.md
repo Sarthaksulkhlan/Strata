@@ -111,6 +111,12 @@ Open [http://localhost:3000](http://localhost:3000). The API is expected at `htt
 
 `VITE_API_BASE_URL` is the only frontend value needed for the aggregate API. Do not place backend credentials, raw datasets or API secrets in this repository or in browser-visible environment variables.
 
+## Live Analysis Console
+
+Use **Open Live Console** on the landing page to inspect your own CSVs and run the recovered Phase 7A pressure methodology. The console provides raw and structured previews, validation, genuine job progress, batting/bowling results, uncertainty labels and private match/ball evidence. Uploaded results remain separate from approved production rankings.
+
+The original delivery CSV requires five companion tables for analysis. Uploads are temporary (15-minute sessions; lost on restart), bounded to 2 MiB / 10,000 rows per file, and never written into public assets. Missing context or insufficient evidence produces an explicit unavailable/empty result. See [the implementation, CSV schema, API and Render guide](backend/LIVE_CONSOLE.md) for requirements and verification.
+
 ## Quality checks
 
 ```powershell
@@ -118,7 +124,13 @@ npm run lint
 npm run build
 ```
 
-The project has no configured frontend test script at present. The backend API is validated separately in its own workspace.
+There is no npm test script; run the existing Node tests and the live client tests directly:
+
+```powershell
+node --import tsx --test src/api/liveClient.test.ts src/ui-prototype/lib/intelligenceEngine.test.ts
+python -m pip install -r backend/requirements-test.txt
+python -m unittest discover -s backend/tests -q
+```
 
 ## Experience notes
 
