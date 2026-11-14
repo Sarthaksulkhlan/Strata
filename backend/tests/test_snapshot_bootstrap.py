@@ -45,3 +45,11 @@ class SnapshotBootstrapTests(unittest.TestCase):
                 with self.assertRaises(SnapshotBootstrapError) as error: bootstrap_snapshot()
         self.assertNotIn(self.env["SNAPSHOT_GITHUB_TOKEN"], str(error.exception))
         self.assertNotIn(self.env["SNAPSHOT_GITHUB_TOKEN"], "\n".join(logs.output))
+
+    def test_rejects_unsafe_archive_path(self):
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("private-snapshot/phase7a_v2_a/manifest.json", json.dumps({"artifacts": {}}))
+            archive.writestr("private-snapshot/phase7a_v2_a/../escape.txt", "unsafe")
+        with patch("urllib.request.urlopen", return_value=io.BytesIO(payload.getvalue())):
+            with self.assertRaises(SnapshotBootstrapError): bootstrap_snapshot()
