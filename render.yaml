@@ -1,0 +1,39 @@
+services:
+  - type: web
+    runtime: static
+    name: strata-frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    autoDeployTrigger: checksPass
+    envVars:
+      # Enter the public API URL in the Render Dashboard; it is not a secret.
+      - key: VITE_API_BASE_URL
+        sync: false
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+
+  - type: web
+    runtime: python
+    name: strata-aggregate-api
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn integration_api.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    autoDeployTrigger: checksPass
+    disk:
+      name: reviewed-output-snapshot
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      # Set these only in Render's private service environment settings.
+      - key: CLUTCHIQ_CORS_ORIGINS
+        sync: false
+      - key: CLUTCHIQ_OUTPUT_SNAPSHOT
+        sync: false
