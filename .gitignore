@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Verified-output snapshots and analytical source data are deployment inputs, never repository files.
+backend/approved-snapshot/
+runs/
+*.csv
+*.csv.gz
+*.parquet
+*.zip
+
+# Python interpreter artifacts are local-only.
+__pycache__/
+*.py[cod]
