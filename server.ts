@@ -13,15 +13,47 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function bootstrapBaselineEvaluation() {
-  const sampleCsv = generateSampleBallByBallCsv();
-  const job = await startAnalysisJob(
-    'phase7a_v2_baseline.csv',
-    Buffer.byteLength(sampleCsv, 'utf8'),
-    sampleCsv,
-    true
-  );
-  return getJobResults(job.job_id)!;
+const AUTHORITATIVE_PROD_BACKEND = (
+  process.env.CLUTCHIQ_PRODUCTION_API_URL ||
+  process.env.VITE_API_BASE_URL ||
+  'https://strataa.onrender.com'
+).replace(/\/$/, '');
+
+const AUTHORITATIVE_PROD_FRONTEND_ORIGIN =
+  process.env.CLUTCHIQ_PRODUCTION_FRONTEND_ORIGIN || 'https://strata-y6yz.onrender.com';
+
+async function proxyAuthoritativeBackend(
+  req: express.Request,
+  res: express.Response,
+  upstreamPath: string
+): Promise<void> {
+  const queryIndex = req.originalUrl.indexOf('?');
+  const queryString = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : '';
+  const targetUrl = `${AUTHORITATIVE_PROD_BACKEND}${upstreamPath}${queryString}`;
+
+  try {
+    const upstreamResponse = await fetch(targetUrl, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        Origin: AUTHORITATIVE_PROD_FRONTEND_ORIGIN,
+      },
+    });
+
+    const rawText = await upstreamResponse.text();
+    res.status(upstreamResponse.status);
+    res.setHeader('Content-Type', upstreamResponse.headers.get('content-type') || 'application/json');
+    res.send(rawText);
+  } catch (err) {
+    const detail =
+      err instanceof Error
+        ? `Authoritative production backend (${AUTHORITATIVE_PROD_BACKEND}) unavailable: ${err.message}`
+        : `Authoritative production backend (${AUTHORITATIVE_PROD_BACKEND}) unavailable.`;
+    res.status(503).json({
+      detail,
+      error: { message: detail },
+    });
+  }
 }
 
 async function startServer() {
@@ -29,145 +61,53 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: '25mb' }));
+  app.use(express.static(path.join(__dirname, 'public')));
 
-  const baselineResults = await bootstrapBaselineEvaluation();
-
-  app.get('/healthz', (_req, res) => {
-    res.json({ status: 'ok', review_status: 'phase_7b_reviewed' });
+  app.get('/healthz', async (_req, res) => {
+    try {
+      const upstream = await fetch(`${AUTHORITATIVE_PROD_BACKEND}/healthz`, {
+        headers: {
+          Accept: 'application/json',
+          Origin: AUTHORITATIVE_PROD_FRONTEND_ORIGIN,
+        },
+      });
+      const body = await upstream.json().catch(() => ({ status: 'ok' }));
+      res.status(upstream.status).json(body);
+    } catch {
+      res.status(503).json({ status: 'unavailable', detail: 'Production backend unreachable.' });
+    }
   });
 
-  app.get('/api/v1/dashboard/summary', (_req, res) => {
-    res.json({
-      data: {
-        source_run: 'phase7a_v2_a',
-        review_status: 'phase_7b_reviewed',
-        evaluation_window: {
-          start: '2024-01-01',
-          training_end: '2023-12-31',
-        },
-        primary_definition: 'rules_pressure',
-        candidate_coverage: [
-          {
-            role: 'batting',
-            definition: 'rules_pressure',
-            evaluated_players: baselineResults.all_batters.length,
-            total_records: baselineResults.summary.total_records,
-          },
-          {
-            role: 'bowling',
-            definition: 'rules_pressure',
-            evaluated_players: baselineResults.all_bowlers.length,
-            total_records: baselineResults.summary.total_records,
-          },
-        ],
-        publication_notice: 'Pressure-performance evidence only; not auction suitability.',
-      },
-    });
+  // Authoritative Production Backend Proxy Routes — Never fabricate or substitute rankings
+  app.get('/api/v1/dashboard/summary', (req, res) => {
+    void proxyAuthoritativeBackend(req, res, '/api/v1/dashboard/summary');
+  });
+
+  app.get('/api/v1/pressure/definitions', (req, res) => {
+    void proxyAuthoritativeBackend(req, res, '/api/v1/pressure/definitions');
   });
 
   app.get('/api/v1/rankings/:role', (req, res) => {
-    const role = req.params.role;
-    if (role !== 'batting' && role !== 'bowling') {
-      res.status(400).json({ detail: 'Invalid role or definition.' });
-      return;
-    }
-    const definition = String(req.query.definition || 'rules_pressure');
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 10));
-    const offset = Math.max(0, Number(req.query.offset) || 0);
-    const sourceList =
-      role === 'batting' ? baselineResults.all_batters : baselineResults.all_bowlers;
-
-    const mapped = sourceList.slice(offset, offset + limit).map((item, idx) => {
-      const halfWidth = Number((Math.max(1.2, 6.5 - item.pressure_balls * 0.14)).toFixed(2));
-      const rateVal =
-        role === 'batting' ? item.pressure_strike_rate : item.pressure_economy;
-      return {
-        rank: item.rank,
-        player: { id: (role === 'batting' ? 1000 : 2000) + idx + 1, name: item.player_name },
-        role,
-        definition,
-        pressure_score: item.pressure_score,
-        rate: rateVal,
-        adjusted_rate: rateVal,
-        exposures: item.pressure_balls,
-        matches: item.matches,
-        seasons: 2,
-        runs: item.runs,
-        wickets: item.wickets,
-        context_coverage: 0.96,
-        uncertainty: {
-          ci95_low: Number((item.pressure_score - halfWidth).toFixed(2)),
-          ci95_high: Number(Math.min(99.9, item.pressure_score + halfWidth).toFixed(2)),
-          ci_half_width: halfWidth,
-          match_rate_sd: Number((halfWidth * 0.65).toFixed(2)),
-        },
-        shrink_weight: Number((item.pressure_balls / (item.pressure_balls + 10)).toFixed(3)),
-        evidence_level: item.evidence_level,
-        source_record_count: item.balls,
-        review_status: 'phase_7b_reviewed',
-      };
-    });
-
-    res.json({
-      data: mapped,
-      meta: {
-        role,
-        definition,
-        total: sourceList.length,
-        limit,
-        offset,
-        source_run: 'phase7a_v2_a',
-        review_status: 'phase_7b_reviewed',
-      },
-    });
+    void proxyAuthoritativeBackend(
+      req,
+      res,
+      `/api/v1/rankings/${encodeURIComponent(req.params.role)}`
+    );
   });
 
-  app.get('/api/v1/methodology', (_req, res) => {
-    res.json({
-      data: {
-        version: 'phase7a_v2',
-        review_status: 'phase_7b_reviewed',
-        sections: [
-          {
-            id: 'scope',
-            title: 'Scope',
-            body_markdown:
-              'Role-specific pressure-performance rankings are aggregate evidence, not auction suitability or eligibility decisions.',
-          },
-          {
-            id: 'pressure-definition',
-            title: 'Pressure definition',
-            body_markdown:
-              'Rules are trained before 2024-01-01 by competition, innings and phase; evaluation begins 2024-01-01. Chase pressure exceeds the historic required-rate 70th percentile. First-innings pressure captures observable recovery or late-resource constraints.',
-          },
-          {
-            id: 'evidence',
-            title: 'Evidence and uncertainty',
-            body_markdown:
-              'Evidence levels depend on exposures, matches and bootstrap interval width. Rankings are evidence-level-first, then empirical-Bayes adjusted pressure score.',
-          },
-          {
-            id: 'sensitivity',
-            title: 'Sensitivity',
-            body_markdown:
-              'Authoritative values are supplied from the frozen generated sensitivity artifact.',
-            results: [
-              { comparison: 'rules_pressure vs rules_q75', role: 'batting', spearman: 0.942 },
-              { comparison: 'rules_pressure vs rules_wider', role: 'bowling', spearman: 0.928 },
-            ],
-          },
-          {
-            id: 'limitations',
-            title: 'Limitations',
-            body_markdown:
-              'No raw records, player profile fields, valuation, auction fit, eligibility, Match Lab recommendations, or rich scouting claims are supplied on the static public overview.',
-          },
-        ],
-      },
-    });
+  app.get('/api/v1/players/:id', (req, res) => {
+    void proxyAuthoritativeBackend(
+      req,
+      res,
+      `/api/v1/players/${encodeURIComponent(req.params.id)}`
+    );
   });
 
-  // Live Console Backend Endpoints
+  app.get('/api/v1/methodology', (req, res) => {
+    void proxyAuthoritativeBackend(req, res, '/api/v1/methodology');
+  });
+
+  // Live Console Backend Endpoints (User-uploaded CSV evaluation console)
   app.get('/api/v1/live-console/sample-csv', (_req, res) => {
     const csvContent = generateSampleBallByBallCsv();
     res.json({

@@ -152,6 +152,33 @@ export interface LiveConsoleAnalysisResults {
 }
 
 const configuredBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const RENDER_PROD_FRONTEND_ORIGIN = 'https://strata-y6yz.onrender.com';
+
+function buildCandidateUrls(path: string): string[] {
+  const isLiveConsoleRoute = path.startsWith('/live-console/');
+  if (isLiveConsoleRoute) {
+    // Live console routes are served by the local/same-origin application server
+    return [`/api/v1${path}`, ...(configuredBase ? [`${configuredBase}/api/v1${path}`] : [])];
+  }
+
+  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  const canCallConfiguredBaseDirectly =
+    Boolean(configuredBase) &&
+    (currentOrigin === RENDER_PROD_FRONTEND_ORIGIN || currentOrigin === configuredBase);
+
+  if (canCallConfiguredBaseDirectly) {
+    return [`${configuredBase}/api/v1${path}`, `/api/v1${path}`];
+  }
+
+  // When running inside Google AI Studio preview or localhost, use same-origin /api/v1 first
+  // (which proxies directly to https://strataa.onrender.com without triggering browser CORS blocks),
+  // then fall back to configuredBase if same-origin proxy is not mounted.
+  const urls = [`/api/v1${path}`];
+  if (configuredBase) {
+    urls.push(`${configuredBase}/api/v1${path}`);
+  }
+  return urls;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
@@ -159,28 +186,42 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
   };
 
-  const primaryUrl = `${configuredBase}/api/v1${path}`;
-  let response: Response;
-  try {
-    response = await fetch(primaryUrl, { ...init, headers });
-  } catch (err) {
-    if (!configuredBase) {
-      response = await fetch(`http://localhost:8000/api/v1${path}`, { ...init, headers });
-    } else {
+  const candidateUrls = buildCandidateUrls(path);
+  let lastError: unknown = null;
+
+  for (let i = 0; i < candidateUrls.length; i++) {
+    const url = candidateUrls[i];
+    try {
+      const response = await fetch(url, { ...init, headers });
+      const contentType = response.headers.get('content-type') || '';
+      const isJson = contentType.includes('application/json');
+
+      // If same-origin returned HTML fallback (e.g., static host without proxy), try next candidate URL
+      if (!isJson && i < candidateUrls.length - 1) {
+        continue;
+      }
+
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message =
+          body?.error?.message ||
+          body?.detail ||
+          body?.data?.error ||
+          `Service unavailable (${response.status})`;
+        throw new Error(message);
+      }
+      return body as T;
+    } catch (err) {
+      lastError = err;
+      // Only fall through to next URL on network/CORS errors
+      if (err instanceof TypeError && i < candidateUrls.length - 1) {
+        continue;
+      }
       throw err;
     }
   }
 
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message =
-      body?.error?.message ||
-      body?.detail ||
-      body?.data?.error ||
-      `Service unavailable (${response.status})`;
-    throw new Error(message);
-  }
-  return body as T;
+  throw lastError instanceof Error ? lastError : new Error('Service unavailable');
 }
 
 export const clutchIqApi = {
@@ -201,31 +242,14 @@ export const clutchIqApi = {
     file_size: number;
     csv_content: string;
   }): Promise<DatasetValidationData> => {
-    const primaryUrl = `${configuredBase}/api/v1/live-console/validate`;
-    let response: Response;
-    try {
-      response = await fetch(primaryUrl, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-    } catch (err) {
-      if (!configuredBase) {
-        response = await fetch('http://localhost:8000/api/v1/live-console/validate', {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-        });
-      } else {
-        throw err;
-      }
-    }
+    const response = await fetch('/api/v1/live-console/validate', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
     const body = await response.json().catch(() => ({}));
     if (body?.data && typeof body.data.valid === 'boolean') {
       return body.data as DatasetValidationData;
