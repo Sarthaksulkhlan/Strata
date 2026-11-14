@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Upload, Play, Download, X, CheckCircle2 } from 'lucide-react';
 import { createLiveApi, LiveApiError, type Evidence, type Job, type LiveRole, type LiveSchema, type Results, type Session, type TableRow } from './api/liveClient';
 
-const api=createLiveApi(import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000');
+const configuredBase=(import.meta.env.VITE_API_BASE_URL||'').replace(/\/$/,'');
+const direct=window.location.origin==='https://strata-y6yz.onrender.com'||window.location.origin===configuredBase;
+const api=createLiveApi(direct?configuredBase:'');
 const button='inline-flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium border border-[#0A1128]/20 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#0A1128]/5 transition-colors';
 const card='border border-[#0A1128]/15 bg-white/60 p-5 sm:p-7';
 const format=(value:unknown)=>value===null || value===undefined ? 'Unavailable' : typeof value==='number' ? Number.isInteger(value)?String(value):value.toFixed(3) : String(value);

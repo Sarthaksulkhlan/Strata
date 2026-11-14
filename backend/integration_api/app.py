@@ -90,6 +90,10 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/match-lab")
     def match_lab(): raise HTTPException(status_code=503, detail="Match Lab is unavailable because no approved analytical output supports it.")
+    @app.api_route("/api/v1/live-console/{legacy_path:path}", methods=["GET", "POST", "DELETE"])
+    def legacy_console(legacy_path: str):
+        raise HTTPException(status_code=410, detail="This unreviewed analysis contract has been replaced. Open the Live Console and use /api/v1/live/schema with the verified Phase 7A upload contract.")
+
     return app
 
 

@@ -134,6 +134,12 @@ class LiveApiTests(unittest.TestCase):
             r=self.client.options('/api/v1/live/uploads',headers={'Origin':origin,'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'Content-Type,X-Analysis-Token'})
             self.assertEqual(r.status_code,code)
 
+    def test_unreviewed_contract_is_explicitly_retired(self):
+        for method,path in [('GET','sample-csv'),('POST','validate'),('POST','jobs'),('GET','jobs/unknown/results')]:
+            response=self.client.request(method,'/api/v1/live-console/'+path)
+            self.assertEqual(response.status_code,410)
+            self.assertIn('/api/v1/live/schema',response.json()['detail'])
+
     def test_concurrent_owners(self):
         with ThreadPoolExecutor(max_workers=2) as pool: owners=list(pool.map(lambda _:self.create(),range(2)))
         self.assertNotEqual(owners[0][0],owners[1][0])

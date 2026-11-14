@@ -17,8 +17,8 @@ with sync_playwright() as p:
     errors=[]
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto(url,wait_until='networkidle')
-    expect(page.get_by_role('link',name='Open Live Console')).to_be_visible()
-    page.get_by_role('link',name='Open Live Console').click()
+    expect(page.get_by_test_id('header-open-live-console-btn')).to_be_visible()
+    page.get_by_test_id('header-open-live-console-btn').click()
     expect(page.get_by_role('heading',name='Live Analysis Console')).to_be_visible()
     expect(page.get_by_role('button',name='Browse CSV files')).to_be_enabled()
     page.get_by_label('Upload cricket CSV files').set_input_files([
@@ -57,7 +57,7 @@ with sync_playwright() as p:
     expect(page.get_by_role('button',name='Browse CSV files')).to_be_enabled()
     expect(page.get_by_role('button',name='Start Analysis')).to_have_count(0)
     page.get_by_role('link',name='Back to platform').click()
-    expect(page.get_by_role('link',name='Open Live Console')).to_be_visible()
+    expect(page.get_by_test_id('header-open-live-console-btn')).to_be_visible()
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'),'Landing overflow'
     page.set_viewport_size({'width':1440,'height':1000})
     page.get_by_role('link',name='Rankings',exact=True).click()
