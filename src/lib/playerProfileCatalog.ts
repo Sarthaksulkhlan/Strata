@@ -242,7 +242,7 @@ export const VERIFIED_PLAYER_CATALOG: Record<number, CatalogEntry> = {
     rrVerified: false,
     rrJerseyPhoto: false,
     rrAssociation: 'West Indies Int’l · T20 Cohort',
-    photoUrl: '/assets/players/player_2417_mykhel.webp',
+    photoUrl: '/assets/players/player_2417_akeal_hosein_solo.jpg',
     cropConfig: {
       objectFit: 'cover',
       objectPosition: '50% 14%',
