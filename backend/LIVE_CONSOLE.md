@@ -1,5 +1,44 @@
 # Live Analysis Console — implementation and verification
 
+## Current status — 15 November 2026
+
+The implementation is already present in GitHub `main` at `34fc81a4486cc759296a6f27e4c7867a9c5ad323`, including the 20 implementation commits and reconciliation with the newer frontend/proxy work. The earlier verification section below is historical; its “not deployed” observations describe the initial implementation, not current production status.
+
+This follow-up fixes one missing portrait URL by using the existing `player_2417_akeal_hosein_solo.jpg`. No image was generated or changed, and the profile layout/crop, analytical methods, production rankings and snapshot remain unchanged. The frontend CI workflow now executes the existing Node test suites as well as lint/build so a missing asset cannot silently pass those checks again.
+
+| Area | Current verification |
+| --- | --- |
+| Backend | 31 tests passed, none skipped, including optional original-source parity and approved-snapshot regression checks |
+| Frontend/proxy | 22 Node tests passed; TypeScript lint and production build passed |
+| Local browser | Full upload-to-results flow, both roles, evidence, downloads, missing-session UI recovery, network errors, empty results, navigation and 1440px/390px layouts verified |
+| Portrait | Corrected image loaded successfully in the actual hover card; all 19 catalog image references resolve to repository files |
+| Single active console | `/#live-console`, `/#/live-console` and `/?view=live-console` each render one verified console |
+| Live backend | Health, live schema, dashboard, methodology and both ten-row ranking endpoints returned HTTP 200 |
+| Live ranking parity | All 20 live rows match the approved CSVs for player IDs/names, ranking order, evidence labels, exposures, matches, seasons, runs, wickets, rates, pressure scores, context coverage, shrinkage and uncertainty (numeric tolerance 1e-8) |
+| CORS | Actual frontend origin preflight accepted with HTTP 200; untrusted origin rejected with HTTP 400 |
+| Live browser | Production console retrieved its schema from `https://strataa.onrender.com/api/v1/live/schema` and enabled uploads without page errors; no test dataset was uploaded to production |
+
+Earlier health/schema requests timed out; subsequent independent HTTP and browser checks succeeded. The cause of that transient failure is **not established** without Render logs. No configuration or backend code change was needed to restore connectivity during these checks. Existing Vite native-config/bundle-size warnings and a test-client deprecation warning remain non-fatal.
+
+The portrait, CI and documentation follow-up changes were verified locally before publication. Publication status is recorded in Git history; these checks do not establish that Render has deployed the follow-up.
+
+Security verification scanned 152 historical Git blobs and 114 working-tree project files for credential signatures and restricted historical data files; no findings were detected. No files were staged. This is evidence from the checks performed, not a guarantee that automated scanning can detect every possible secret.
+
+### Reconciled routing and local setup
+
+The existing header/hero buttons share the verified console. The Node development server proxies `/api/v1/live/*` to FastAPI, forwarding the ownership header and raw CSV bytes without running an alternate model. The former `/api/v1/live-console/*` contract returns HTTP 410 with migration guidance. Its old engine/UI source files are retained for history/tests but are not mounted as a second active analysis flow. Existing profile cards, images and aggregate API proxy remain intact.
+
+For local verification, start FastAPI with the existing approved snapshot and explicit local CORS origin. Then, in the frontend repository terminal:
+
+```powershell
+$env:VITE_API_BASE_URL="http://127.0.0.1:8000"
+$env:CLUTCHIQ_PRODUCTION_API_URL="http://127.0.0.1:8000"
+$env:CLUTCHIQ_PRODUCTION_FRONTEND_ORIGIN="http://localhost:3000"
+npm run dev
+```
+
+`npm run dev` now starts the existing Node/Vite development server, including the proxy. Do not start an additional competing analysis server. Production Static Site builds still use the public `VITE_API_BASE_URL` directly. These public URLs are not credentials; the snapshot token remains a backend-only secret.
+
 ## Scope and source recovery
 
 This is an additive feature at `/#live-console`. The original landing page now has an **Open Live Console** link. Existing production rankings, dashboard, player evidence, methodology, animations, navigation, Match Lab and auction gating remain in their existing components and routes.
@@ -119,7 +158,7 @@ Other errors: 408 upload timeout, 413 byte limits, 415 unsupported content type,
 - `backend/requirements-test.txt`, `.github/workflows/backend-verify.yml`: install the HTTP test client in test environments; runtime requirements are unchanged.
 - This document and the README navigation entry.
 
-## Verification performed
+## Initial local verification (historical, before reconciliation)
 
 Verification used Python 3.12.10 with a separate test environment installing the existing runtime requirements: Pandas 2.3.3, NumPy 2.5.4. No existing Python environment was downgraded. Original offline tests also ran in their existing environment.
 
@@ -138,7 +177,7 @@ Reproduce from the repository root:
 ```powershell
 python -m pip install -r backend/requirements-test.txt
 python -m unittest discover -s backend/tests -q
-node --import tsx --test src/api/liveClient.test.ts src/ui-prototype/lib/intelligenceEngine.test.ts
+node --import tsx --test src/api/*.test.ts src/lib/*.test.ts src/ui-prototype/lib/*.test.ts server/*.test.ts
 npm run lint
 npm run build
 git diff --check
@@ -148,7 +187,7 @@ Private verification tests require `STRATA_ORIGINAL_WORKSPACE`, `STRATA_ORIGINAL
 
 ## Existing Render Free deployment
 
-No deployment, push or commit is part of this local verification. After approving and publishing the reviewed code, update the **existing** services in this order:
+The base implementation is published and the live console schema has been verified as described above. Publishing the follow-up does not by itself verify deployment. For an approved release, update the **existing** services in this order:
 
 1. Backend Web Service: root `backend`, build `pip install -r requirements.txt`, start `bash start.sh`, health `/healthz`, existing Python 3.12 setting. Keep exactly one Uvicorn process (do not set multiple `WEB_CONCURRENCY` workers or replicas). The existing startup script retrieves and validates the pinned private snapshot before Uvicorn binds `$PORT`.
 2. Preserve private `SNAPSHOT_GITHUB_REPOSITORY`, pinned 40-character `SNAPSHOT_GITHUB_REF`, and read-only `SNAPSHOT_GITHUB_TOKEN` settings. Preserve `CLUTCHIQ_OUTPUT_SNAPSHOT=/tmp/clutchiq-snapshot/phase7a_v2_a`. Keep all secrets only in Render. No disk is needed for these new jobs.
@@ -156,6 +195,6 @@ No deployment, push or commit is part of this local verification. After approvin
 4. Existing Static Site: repository root, build `npm ci && npm run build`, publish `dist`. Retain public `VITE_API_BASE_URL=https://strataa.onrender.com`; rebuild/redeploy the frontend after the backend is ready. This is a public URL, never a credential. Hash navigation needs no new server rewrite.
 5. Open `https://strata-y6yz.onrender.com/#live-console`. Test with non-sensitive CSVs first. Verify real POST/GET requests, errors, deletion and the existing rankings. Never upload proprietary test fixtures to a public test service without authorization.
 
-Cold starts may delay connections. A restarted instance returns 404 for previous jobs; re-upload rather than expecting recovery. The new feature is **locally verified, not deployed** until those steps occur. Free-plan memory/concurrency limits deliberately preclude full unrestricted dataset uploads and permanent history.
+Cold starts may delay connections. A restarted instance returns 404 for previous jobs; re-upload rather than expecting recovery. The full analysis flow was verified locally; production received read-only connectivity checks, not a new upload-to-results test. Free-plan memory/concurrency limits deliberately preclude full unrestricted dataset uploads and permanent history.
 
 Rollback: redeploy the previous reviewed frontend/backend revisions together. Existing production snapshot, source data, old API routes and Render variables require no migration. In-flight uploaded jobs are disposable by design.
