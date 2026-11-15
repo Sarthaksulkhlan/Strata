@@ -15,4 +15,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: node --import tsx --test src/api/*.test.ts src/lib/*.test.ts src/ui-prototype/lib/*.test.ts server/*.test.ts
       - run: npm run build

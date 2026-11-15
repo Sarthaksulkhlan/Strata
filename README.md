@@ -127,7 +127,7 @@ npm run build
 There is no npm test script; run the existing Node tests and the live client tests directly:
 
 ```powershell
-node --import tsx --test src/api/liveClient.test.ts src/ui-prototype/lib/intelligenceEngine.test.ts
+node --import tsx --test src/api/*.test.ts src/lib/*.test.ts src/ui-prototype/lib/*.test.ts server/*.test.ts
 python -m pip install -r backend/requirements-test.txt
 python -m unittest discover -s backend/tests -q
 ```
