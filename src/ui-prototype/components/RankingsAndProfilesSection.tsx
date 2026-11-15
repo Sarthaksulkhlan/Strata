@@ -53,9 +53,14 @@ function Table({
     : state.data;
 
   const title = role === 'batting' ? 'Batters' : 'Bowlers';
+  const sectionAnchorId = role === 'batting' ? 'top-10-batsmen' : 'top-10-bowlers';
 
   return (
-    <div className="space-y-4" data-testid={`rankings-section-${role}`}>
+    <div
+      id={sectionAnchorId}
+      className="space-y-4 scroll-mt-24"
+      data-testid={`rankings-section-${role}`}
+    >
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
         <div>
           <span className="font-mono-tabular text-xs text-[#1D4ED8]">
@@ -421,6 +426,58 @@ export const RankingsAndProfilesSection: React.FC = () => {
             Aggregate pressure-performance evidence only. Not auction suitability, eligibility, or a
             player dossier.
           </p>
+        </div>
+
+        {/* Direct Top 10 Batsmen & Top 10 Bowlers Section Navigation Cards */}
+        <div
+          data-testid="rankings-direct-jump-bar"
+          className="grid grid-cols-1 md:grid-cols-2 gap-4"
+        >
+          <a
+            href="#top-10-batsmen"
+            data-testid="jump-card-top-10-batsmen"
+            className="group p-4 sm:p-5 bg-[#EFECE4] hover:bg-[#0A1128] text-[#0A1128] hover:text-[#F7F4EE] border border-[#0A1128]/15 hover:border-[#1D4ED8] transition-colors flex items-center justify-between gap-4"
+          >
+            <div className="space-y-1 min-w-0">
+              <div className="font-mono-tabular text-[10px] uppercase tracking-widest text-[#1D4ED8] group-hover:text-[#60A5FA]">
+                DIRECT SECTION · BATTING COHORT
+              </div>
+              <div className="font-editorial text-2xl font-semibold">
+                Top 10 Batsmen Under Pressure
+              </div>
+              <div className="font-mono-tabular text-xs text-[#475569] group-hover:text-[#CBD5E1] truncate">
+                {batting.data[0]
+                  ? `#01 Leader: ${batting.data[0].player.name} (${batting.data[0].pressure_score.toFixed(2)})`
+                  : '10 Verified Phase 7B Batting Profiles'}
+              </div>
+            </div>
+            <span className="px-3 py-1.5 bg-[#1D4ED8] text-[#F7F4EE] font-mono-tabular text-xs font-semibold shrink-0">
+              View Batsmen ↓
+            </span>
+          </a>
+
+          <a
+            href="#top-10-bowlers"
+            data-testid="jump-card-top-10-bowlers"
+            className="group p-4 sm:p-5 bg-[#EFECE4] hover:bg-[#0A1128] text-[#0A1128] hover:text-[#F7F4EE] border border-[#0A1128]/15 hover:border-[#1D4ED8] transition-colors flex items-center justify-between gap-4"
+          >
+            <div className="space-y-1 min-w-0">
+              <div className="font-mono-tabular text-[10px] uppercase tracking-widest text-[#1D4ED8] group-hover:text-[#60A5FA]">
+                DIRECT SECTION · BOWLING COHORT
+              </div>
+              <div className="font-editorial text-2xl font-semibold">
+                Top 10 Bowlers Under Pressure
+              </div>
+              <div className="font-mono-tabular text-xs text-[#475569] group-hover:text-[#CBD5E1] truncate">
+                {bowling.data[0]
+                  ? `#01 Leader: ${bowling.data[0].player.name} (${bowling.data[0].pressure_score.toFixed(2)})`
+                  : '10 Verified Phase 7B Bowling Profiles'}
+              </div>
+            </div>
+            <span className="px-3 py-1.5 bg-[#1D4ED8] text-[#F7F4EE] font-mono-tabular text-xs font-semibold shrink-0">
+              View Bowlers ↓
+            </span>
+          </a>
         </div>
 
         <div className="p-5 bg-[#EFECE4] border border-[#0A1128]/12">
