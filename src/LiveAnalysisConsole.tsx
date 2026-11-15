@@ -31,13 +31,21 @@ import {
   type Results,
   type Session,
   type TableRow,
+  type Validation,
 } from './api/liveClient';
 import {
+  CANONICAL_LIVE_TABLES,
+  REQUIRED_TABLE_SCHEMAS,
   buildTimelineStages,
   computeTableChecklist,
   formatBytesCompact,
   formatExpiryTimer,
   getEvidenceTierStyle,
+  getRequiredColumnsForTable,
+  identifyCsvFilename,
+  validateCsvContentForTable,
+  type CanonicalTableKey,
+  type TableSchemaValidationFailure,
 } from './lib/liveConsoleUiHelpers';
 
 const configuredBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
@@ -122,7 +130,14 @@ export default function LiveAnalysisConsole() {
   const [busy, setBusy] = useState(false);
   const [activity, setActivity] = useState('');
   const [isDragging, setIsDragging] = useState(false);
-  const [files, setFiles] = useState<Array<{ name: string; size: number }>>([]);
+  const [files, setFiles] = useState<
+    Array<{ name: string; size: number; tableKey: CanonicalTableKey }>
+  >([]);
+  const [stagedValidations, setStagedValidations] = useState<Record<string, Validation>>({});
+  const [stagedStages, setStagedStages] = useState<string[]>([]);
+  const [schemaErrors, setSchemaErrors] = useState<
+    Record<string, TableSchemaValidationFailure>
+  >({});
   const [role, setRole] = useState<LiveRole>('batting');
   const [playerSearch, setPlayerSearch] = useState('');
   const [evidence, setEvidence] = useState<Evidence | null>(null);
@@ -131,6 +146,7 @@ export default function LiveAnalysisConsole() {
   const input = useRef<HTMLInputElement>(null);
   const alive = useRef(true);
   const evidenceSectionRef = useRef<HTMLDivElement>(null);
+  const stagedCompanionFiles = useRef<Map<CanonicalTableKey, File>>(new Map());
 
   const working = job?.status === 'queued' || job?.status === 'running';
 
@@ -140,6 +156,10 @@ export default function LiveAnalysisConsole() {
     setResult(null);
     setEvidence(null);
     setFiles([]);
+    stagedCompanionFiles.current.clear();
+    setStagedValidations({});
+    setStagedStages([]);
+    setSchemaErrors({});
     setPlayerSearch('');
     setSelectedTable('ball_by_ball');
   }
@@ -217,54 +237,189 @@ export default function LiveAnalysisConsole() {
   }
 
   async function upload(selected: FileList | File[]) {
-    if (busy || working || !schema || (job && job.status !== 'validated')) return;
     const incoming = Array.from(selected);
+    if (input.current) input.current.value = '';
+    if (busy || working || !schema || (job && job.status !== 'validated')) return;
     await action(async () => {
       if (!incoming.length) return;
+
+      // 1. Identify each file strictly by its actual filename and check batch duplicates
+      const identifiedBatch: Array<{
+        file: File;
+        tableKey: CanonicalTableKey;
+        canonicalFilename: string;
+      }> = [];
+      const seenInBatch = new Set<CanonicalTableKey>();
+
       for (const f of incoming) {
-        if (!f.name.toLowerCase().endsWith('.csv')) {
-          throw new Error('Choose CSV files only.');
+        const idResult = identifyCsvFilename(f.name, schema);
+        if (!idResult.ok) {
+          throw new Error(idResult.error);
         }
         if (f.size > schema.max_bytes || !f.size) {
-          throw new Error(`${f.name}: file must be non-empty and at most 2 MiB.`);
+          throw new Error(
+            `${idResult.canonicalFilename}: file must be non-empty and at most 2 MiB.`
+          );
         }
+        if (seenInBatch.has(idResult.tableKey)) {
+          throw new Error(
+            `Duplicate file "${f.name}" in selection. Each of the six required CSV tables may only be supplied once.`
+          );
+        }
+        seenInBatch.add(idResult.tableKey);
+        identifiedBatch.push({
+          file: f,
+          tableKey: idResult.tableKey,
+          canonicalFilename: idResult.canonicalFilename,
+        });
       }
-      setFiles((previous) => [
-        ...previous,
-        ...incoming.map((f) => ({ name: f.name, size: f.size })),
+
+      // 2. Prevent duplicate files from being counted as separate required tables
+      const alreadyValidatedTables = new Set<string>([
+        ...Object.keys(stagedValidations),
+        ...Object.keys(job?.validation || {}),
       ]);
-      let current = session;
-      let next = job;
-      if (!current) {
-        const delivery =
-          incoming.find((f) => f.name === 'ball_by_ball.csv') ||
-          (incoming.length === 1 ? incoming[0] : null);
-        if (!delivery) {
-          throw new Error(
-            'Start with ball_by_ball.csv, or select it alongside the five companion CSVs.'
-          );
-        }
-        setActivity('Uploading and validating deliveries…');
-        const response = await api.upload(delivery);
-        current = { job_id: response.job_id, access_token: response.access_token };
-        next = response;
-        setSession(current);
-        setJob(next);
-        incoming.splice(incoming.indexOf(delivery), 1);
+
+      if (
+        identifiedBatch.length === 1 &&
+        alreadyValidatedTables.has(identifiedBatch[0].tableKey)
+      ) {
+        const dup = identifiedBatch[0];
+        setSelectedTable(dup.tableKey);
+        const remaining = CANONICAL_LIVE_TABLES.map((t) => t.filename).filter(
+          (fn) => !alreadyValidatedTables.has(fn.replace(/\.csv$/i, ''))
+        );
+        throw new Error(
+          `${dup.canonicalFilename} is already uploaded and validated in this session (${alreadyValidatedTables.size}/6 tables ready). ${
+            remaining.length
+              ? `Remaining tables needed: ${remaining.join(', ')}.`
+              : 'All 6 tables are ready.'
+          } Click Delete session to replace an uploaded file.`
+        );
       }
-      for (const file of incoming) {
-        const table = file.name.replace(/\.csv$/i, '');
-        if (!schema.required_columns[table] || table === 'ball_by_ball') {
-          throw new Error(
-            'Companion filenames must match the schema below. Delete the current upload to replace deliveries.'
-          );
+
+      // Filter out any table already locked on the backend job when uploading a multi-file batch
+      const batchToValidate = identifiedBatch.filter(
+        (item) => !job?.validation?.[item.tableKey]
+      );
+      if (!batchToValidate.length) {
+        throw new Error(
+          'All selected CSV tables have already been uploaded and validated in this session. Click Delete session to start over.'
+        );
+      }
+
+      // 3. Validate each CSV file independently against its OWN required table schema
+      const validatedItems: Array<{
+        file: File;
+        tableKey: CanonicalTableKey;
+        canonicalFilename: string;
+        validation: Validation;
+      }> = [];
+
+      for (const item of batchToValidate) {
+        setActivity(`Validating ${item.canonicalFilename} against ${item.tableKey} schema…`);
+        const rawText = await item.file.text();
+        const check = validateCsvContentForTable(rawText, item.tableKey, schema);
+        if (!check.ok) {
+          setSchemaErrors((prev) => ({ ...prev, [item.tableKey]: check }));
+          setSelectedTable(item.tableKey);
+          throw new Error(check.error);
         }
-        setActivity(`Uploading and validating ${table}…`);
-        next = await api.companion(current, table, file);
-        setJob(next);
+        setSchemaErrors((prev) => {
+          if (!prev[item.tableKey]) return prev;
+          const copy = { ...prev };
+          delete copy[item.tableKey];
+          return copy;
+        });
+        validatedItems.push({
+          ...item,
+          validation: check.validation,
+        });
+      }
+
+      // 4. Record deduplicated file metadata by canonical table key
+      setFiles((previous) => {
+        const byTable = new Map<
+          CanonicalTableKey,
+          { name: string; size: number; tableKey: CanonicalTableKey }
+        >();
+        for (const p of previous) {
+          byTable.set(p.tableKey, p);
+        }
+        for (const item of validatedItems) {
+          byTable.set(item.tableKey, {
+            name: item.canonicalFilename,
+            size: item.file.size,
+            tableKey: item.tableKey,
+          });
+        }
+        return Array.from(byTable.values());
+      });
+
+      // 5. Synchronize with backend or stage companion tables until ball_by_ball.csv is supplied
+      let currentSession = session;
+      let nextJob = job;
+
+      const deliveryItem = validatedItems.find((item) => item.tableKey === 'ball_by_ball');
+      const companionItems = validatedItems.filter((item) => item.tableKey !== 'ball_by_ball');
+
+      if (!currentSession && deliveryItem) {
+        setActivity('Uploading and validating ball_by_ball.csv…');
+        const response = await api.upload(deliveryItem.file);
+        currentSession = {
+          job_id: response.job_id,
+          access_token: response.access_token,
+        };
+        nextJob = response;
+        setSession(currentSession);
+        setJob(nextJob);
+        setSelectedTable('ball_by_ball');
+      }
+
+      if (currentSession) {
+        // Combine any previously staged companion files with newly uploaded companion files
+        const companionsToSync = new Map<CanonicalTableKey, File>();
+        for (const [k, f] of stagedCompanionFiles.current.entries()) {
+          if (!nextJob?.validation?.[k]) {
+            companionsToSync.set(k, f);
+          }
+        }
+        for (const comp of companionItems) {
+          if (!nextJob?.validation?.[comp.tableKey]) {
+            companionsToSync.set(comp.tableKey, comp.file);
+          }
+        }
+
+        for (const [tableKey, compFile] of companionsToSync.entries()) {
+          setActivity(`Uploading and validating ${tableKey}.csv…`);
+          nextJob = await api.companion(currentSession, tableKey, compFile);
+          setJob(nextJob);
+          stagedCompanionFiles.current.delete(tableKey);
+          setStagedValidations((prev) => {
+            if (!prev[tableKey]) return prev;
+            const copy = { ...prev };
+            delete copy[tableKey];
+            return copy;
+          });
+        }
+        setSelectedTable(validatedItems[validatedItems.length - 1].tableKey);
+      } else {
+        // Companion file(s) uploaded before ball_by_ball.csv: stage locally with full schema validation
+        for (const comp of companionItems) {
+          stagedCompanionFiles.current.set(comp.tableKey, comp.file);
+          setStagedValidations((prev) => ({
+            ...prev,
+            [comp.tableKey]: comp.validation,
+          }));
+          setStagedStages((prev) => [
+            ...prev.filter((s) => !s.startsWith(`${comp.tableKey}:`)),
+            `${comp.tableKey}: CSV read and schema checked`,
+            `${comp.tableKey}: ${comp.validation.processed_rows} rows validated against ${comp.tableKey} schema`,
+          ]);
+        }
+        setSelectedTable(validatedItems[validatedItems.length - 1].tableKey);
       }
     });
-    if (input.current) input.current.value = '';
   }
 
   async function download(kind: 'structured' | 'rankings') {
@@ -291,21 +446,48 @@ export default function LiveAnalysisConsole() {
     });
   }
 
+  const effectiveValidation = useMemo<Record<string, Validation>>(
+    () => ({
+      ...stagedValidations,
+      ...(job?.validation || {}),
+    }),
+    [stagedValidations, job]
+  );
+
   const checklist = useMemo(
-    () => computeTableChecklist(schema, job, files),
-    [schema, job, files]
+    () => computeTableChecklist(schema, job, files, stagedValidations, schemaErrors),
+    [schema, job, files, stagedValidations, schemaErrors]
   );
   const validatedCount = useMemo(
     () => checklist.filter((item) => item.status === 'validated').length,
     [checklist]
   );
+  const remainingMissingTables = useMemo(
+    () =>
+      CANONICAL_LIVE_TABLES.map((t) => t.key).filter((key) => !effectiveValidation[key]),
+    [effectiveValidation]
+  );
   const totalUploadedBytes = useMemo(
     () => files.reduce((acc, f) => acc + f.size, 0),
     [files]
   );
-  const timelineStages = useMemo(() => buildTimelineStages(job), [job]);
+  const timelineStages = useMemo(
+    () => buildTimelineStages(job, stagedStages),
+    [job, stagedStages]
+  );
 
-  const validation = job?.validation[selectedTable];
+  const hasUploadSession = Boolean(job || Object.keys(stagedValidations).length > 0);
+  const hasValidationOrSchemaActivity = Boolean(
+    hasUploadSession || Object.keys(schemaErrors).length > 0
+  );
+
+  const validation = effectiveValidation[selectedTable];
+  const selectedTableSchemaError = schemaErrors[selectedTable] || null;
+  const selectedTableRequiredCols = useMemo(
+    () => getRequiredColumnsForTable(selectedTable, schema),
+    [selectedTable, schema]
+  );
+
   const top10Batters: Player[] = useMemo(
     () => result?.rankings?.batting?.slice(0, 10) || [],
     [result]
@@ -357,7 +539,7 @@ export default function LiveAnalysisConsole() {
               >
                 01 / Ingestion ({validatedCount}/6)
               </button>
-              {job && (
+              {hasValidationOrSchemaActivity && (
                 <button
                   type="button"
                   onClick={() => scrollToSection('validation-section')}
@@ -366,7 +548,7 @@ export default function LiveAnalysisConsole() {
                   02 / Validation
                 </button>
               )}
-              {job && (
+              {hasUploadSession && (
                 <button
                   type="button"
                   onClick={() => scrollToSection('pipeline-section')}
@@ -579,9 +761,9 @@ export default function LiveAnalysisConsole() {
                   Drop your CSV files here
                 </p>
                 <p className="text-xs sm:text-sm text-[#475569] my-2 leading-relaxed">
-                  Start with <code className="font-mono-tabular font-semibold">ball_by_ball.csv</code>.
-                  Add the five companion tables (or select all six together) to enable pressure
-                  analysis.
+                  Upload any of the six required CSV tables individually in any order, or select
+                  all six together. Each file is identified by its filename and validated against
+                  its own schema.
                 </p>
                 <input
                   ref={input}
@@ -627,23 +809,25 @@ export default function LiveAnalysisConsole() {
                 >
                   {activity ||
                     (job
-                      ? `Upload status: ${job.status}`
+                      ? `Upload status: ${job.status} (${validatedCount}/6 tables validated)`
+                      : validatedCount > 0
+                      ? `Upload status: validated (${validatedCount}/6 tables validated)`
                       : schema
                       ? 'Ready for upload.'
                       : 'Connecting to backend…')}
                 </p>
               </div>
 
-              {/* Uploaded File Stream Ledger */}
+              {/* Uploaded File Stream Ledger (Deduplicated by Required Table) */}
               {files.length > 0 && (
                 <div className="p-3.5 bg-[#F7F4EE] border border-[#0A1128]/12 space-y-2">
                   <div className="font-mono-tabular text-[11px] uppercase tracking-wider text-[#64748B]">
-                    UPLOADED FILE STREAM ({files.length})
+                    UPLOADED FILE STREAM ({files.length} / 6 TABLES)
                   </div>
                   <ul className="text-xs font-mono-tabular break-all space-y-1.5">
-                    {files.map((f, i) => (
+                    {files.map((f) => (
                       <li
-                        key={`${f.name}-${i}`}
+                        key={f.tableKey}
                         className="flex items-center justify-between gap-2 py-1 border-b border-[#0A1128]/8 last:border-b-0"
                       >
                         <span className="inline-flex items-center gap-1.5 font-medium text-[#0A1128] truncate">
@@ -659,12 +843,13 @@ export default function LiveAnalysisConsole() {
                 </div>
               )}
 
-              {job?.missing_tables.length ? (
+              {hasUploadSession && remainingMissingTables.length > 0 ? (
                 <div className="p-3.5 bg-amber-50/90 border border-amber-600/35 text-xs sm:text-sm text-amber-950">
                   <strong className="font-mono-tabular uppercase text-[11px] block mb-0.5 text-amber-900">
-                    Pending Companion Tables ({job.missing_tables.length})
+                    Pending Tables ({remainingMissingTables.length})
                   </strong>
-                  Required before analysis: {job.missing_tables.map((t) => t + '.csv').join(', ')}.
+                  Required before analysis:{' '}
+                  {remainingMissingTables.map((t) => t + '.csv').join(', ')}.
                 </div>
               ) : null}
             </div>
@@ -672,19 +857,23 @@ export default function LiveAnalysisConsole() {
             {/* Right 7 Cols: 6-Table Schema Checklist Grid */}
             <div className="lg:col-span-7 space-y-3">
               <div className="flex items-center justify-between gap-2 font-mono-tabular text-xs text-[#475569]">
-                <span>SIX-TABLE DATA PACK CHECKLIST</span>
+                <span>SIX-TABLE DATA PACK CHECKLIST ({validatedCount}/6 VALIDATED)</span>
                 <span>MAX 2 MiB / 10,000 ROWS PER CSV</span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {checklist.map((item) => {
                   const isValidated = item.status === 'validated';
+                  const isSchemaError = item.status === 'schema_error';
                   return (
                     <div
                       key={item.key}
+                      data-testid={`checklist-card-${item.key}`}
                       className={`p-3.5 border transition-colors flex flex-col justify-between gap-2.5 ${
                         isValidated
                           ? 'bg-[#F7F4EE] border-[#1D4ED8]/50'
+                          : isSchemaError
+                          ? 'bg-red-50/90 border-red-600/50'
                           : 'bg-[#F7F4EE]/60 border-[#0A1128]/15'
                       }`}
                     >
@@ -695,13 +884,25 @@ export default function LiveAnalysisConsole() {
                           </span>
                           <span
                             className={`inline-flex items-center gap-1 font-mono-tabular text-[10px] font-bold uppercase ${
-                              isValidated ? 'text-emerald-700' : 'text-[#64748B]'
+                              isValidated
+                                ? 'text-emerald-700'
+                                : isSchemaError
+                                ? 'text-red-700'
+                                : 'text-[#64748B]'
                             }`}
                           >
                             {isValidated ? (
                               <>
                                 <CheckCircle2 size={13} className="text-emerald-600" />
                                 <span>VALIDATED</span>
+                              </>
+                            ) : isSchemaError ? (
+                              <>
+                                <AlertCircle size={13} className="text-red-600" />
+                                <span>
+                                  SCHEMA ERROR ({item.schemaError?.missingColumns.length || 0}{' '}
+                                  MISSING)
+                                </span>
                               </>
                             ) : (
                               <>
@@ -715,6 +916,14 @@ export default function LiveAnalysisConsole() {
                           {item.filename}
                         </div>
                         <div className="text-xs text-[#475569] leading-snug">{item.purpose}</div>
+                        {isSchemaError && item.schemaError && (
+                          <div className="mt-1.5 p-2 bg-red-100/80 border border-red-300 text-[11px] font-mono-tabular text-red-900 break-words">
+                            <strong>Missing in {item.filename}:</strong>{' '}
+                            {item.schemaError.missingColumns.length > 0
+                              ? item.schemaError.missingColumns.join(', ')
+                              : item.schemaError.error}
+                          </div>
+                        )}
                       </div>
 
                       <div className="pt-2 border-t border-[#0A1128]/10 flex items-center justify-between gap-2 font-mono-tabular text-[11px]">
@@ -726,10 +935,29 @@ export default function LiveAnalysisConsole() {
                             </span>
                             <button
                               type="button"
-                              onClick={() => setSelectedTable(item.key)}
+                              onClick={() => {
+                                setSelectedTable(item.key);
+                                scrollToSection('validation-section');
+                              }}
                               className="text-[#1D4ED8] hover:underline font-semibold cursor-pointer"
                             >
                               Inspect →
+                            </button>
+                          </>
+                        ) : isSchemaError ? (
+                          <>
+                            <span className="text-red-800 font-semibold">
+                              {item.requiredColumnCount} required columns
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedTable(item.key);
+                                scrollToSection('validation-section');
+                              }}
+                              className="text-red-700 hover:underline font-semibold cursor-pointer"
+                            >
+                              View missing →
                             </button>
                           </>
                         ) : (
@@ -751,7 +979,7 @@ export default function LiveAnalysisConsole() {
           {/* Schema Reference Drawer */}
           <details className="mt-6 border-t border-[#0A1128]/12 pt-4 text-sm">
             <summary className="cursor-pointer font-mono-tabular text-xs uppercase tracking-wider font-semibold text-[#0A1128] hover:text-[#1D4ED8]">
-              Original CSV schema and prerequisites ({schema ? Object.keys(schema.required_columns).length : 6} tables)
+              Original CSV schema and prerequisites (6 tables)
             </summary>
             <p className="my-3 text-xs sm:text-sm text-[#475569] leading-relaxed">
               Dates must be YYYY-MM-DD. Literal “None” means no extras; unknown extra conventions
@@ -760,8 +988,8 @@ export default function LiveAnalysisConsole() {
               added.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-              {schema &&
-                Object.entries(schema.required_columns).map(([table, cols]) => (
+              {Object.entries(schema?.required_columns || REQUIRED_TABLE_SCHEMAS).map(
+                ([table, cols]) => (
                   <div
                     className="p-3 bg-[#F7F4EE] border border-[#0A1128]/12"
                     key={table}
@@ -778,18 +1006,19 @@ export default function LiveAnalysisConsole() {
                       {cols.join(', ')}
                     </p>
                   </div>
-                ))}
+                )
+              )}
             </div>
           </details>
         </section>
 
         {/* SECTION 02: VALIDATION & STRUCTURED DATA */}
-        {job && (
+        {hasValidationOrSchemaActivity && (
           <section id="validation-section" className={cardBase}>
             <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-[#0A1128]/12 pb-4 mb-5">
               <div>
                 <span className="font-mono-tabular text-xs uppercase tracking-widest text-[#1D4ED8] font-semibold">
-                  STEP 02 · SCHEMA &amp; EVENT CONTRACT AUDIT
+                  STEP 02 · PER-FILE SCHEMA &amp; EVENT CONTRACT AUDIT
                 </span>
                 <h2 className="font-editorial text-2xl sm:text-3xl font-semibold mt-0.5">
                   02 / Validation &amp; structured data
@@ -803,9 +1032,9 @@ export default function LiveAnalysisConsole() {
                   value={selectedTable}
                   onChange={(e) => setSelectedTable(e.target.value)}
                 >
-                  {Object.keys(job.validation).map((t) => (
-                    <option key={t} value={t}>
-                      {t}
+                  {CANONICAL_LIVE_TABLES.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.filename} ({effectiveValidation[t.key] ? 'Validated' : schemaErrors[t.key] ? 'Schema Error' : 'Pending'})
                     </option>
                   ))}
                 </select>
@@ -814,20 +1043,100 @@ export default function LiveAnalysisConsole() {
 
             {/* Quick Table Switcher Pills */}
             <div className="flex flex-wrap gap-2 mb-5">
-              {Object.keys(job.validation).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setSelectedTable(t)}
-                  className={`px-3 py-1.5 font-mono-tabular text-xs border transition-colors cursor-pointer ${
-                    selectedTable === t
-                      ? 'bg-[#0A1128] text-[#F7F4EE] border-[#0A1128]'
-                      : 'bg-[#F7F4EE] text-[#334155] border-[#0A1128]/15 hover:border-[#1D4ED8]'
-                  }`}
-                >
-                  {t}.csv ({job.validation[t].processed_rows.toLocaleString()})
-                </button>
-              ))}
+              {CANONICAL_LIVE_TABLES.filter(
+                (t) => Boolean(effectiveValidation[t.key] || schemaErrors[t.key])
+              ).map((t) => {
+                const v = effectiveValidation[t.key];
+                const err = schemaErrors[t.key];
+                return (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => setSelectedTable(t.key)}
+                    className={`px-3 py-1.5 font-mono-tabular text-xs border transition-colors cursor-pointer ${
+                      selectedTable === t.key
+                        ? 'bg-[#0A1128] text-[#F7F4EE] border-[#0A1128]'
+                        : err
+                        ? 'bg-red-50 text-red-900 border-red-400 hover:border-red-700'
+                        : 'bg-[#F7F4EE] text-[#334155] border-[#0A1128]/15 hover:border-[#1D4ED8]'
+                    }`}
+                  >
+                    {t.filename}{' '}
+                    {v
+                      ? `(${v.processed_rows.toLocaleString()})`
+                      : err
+                      ? `(${err.missingColumns.length} missing)`
+                      : ''}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Per-File Schema Column Audit Box */}
+            <div
+              data-testid="selected-table-schema-audit"
+              className={`p-4 mb-5 border ${
+                selectedTableSchemaError
+                  ? 'bg-red-50/90 border-red-600/50 text-red-950'
+                  : 'bg-[#F7F4EE] border-[#0A1128]/15 text-[#0A1128]'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                <div className="font-mono-tabular text-xs font-bold uppercase tracking-wider">
+                  Schema Verification for {selectedTable}.csv ({selectedTableRequiredCols.length}{' '}
+                  Required Columns)
+                </div>
+                {validation ? (
+                  <span className="font-mono-tabular text-xs font-semibold text-emerald-700">
+                    {selectedTableRequiredCols.length}/{selectedTableRequiredCols.length} Required
+                    Columns Present
+                  </span>
+                ) : selectedTableSchemaError ? (
+                  <span className="font-mono-tabular text-xs font-bold text-red-700">
+                    {selectedTableSchemaError.missingColumns.length} Missing of{' '}
+                    {selectedTableRequiredCols.length} Required Columns
+                  </span>
+                ) : (
+                  <span className="font-mono-tabular text-xs text-[#64748B]">
+                    Awaiting {selectedTable}.csv upload
+                  </span>
+                )}
+              </div>
+
+              {selectedTableSchemaError && selectedTableSchemaError.missingColumns.length > 0 && (
+                <div className="mb-3 p-3 bg-white border border-red-300 text-xs font-mono-tabular text-red-900">
+                  <strong>Missing required columns for {selectedTable}.csv:</strong>{' '}
+                  {selectedTableSchemaError.missingColumns.join(', ')}
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-1.5">
+                {selectedTableRequiredCols.map((col) => {
+                  const isPresent = validation
+                    ? validation.columns.includes(col)
+                    : selectedTableSchemaError
+                    ? selectedTableSchemaError.presentColumns.includes(col)
+                    : false;
+                  const isMissing = selectedTableSchemaError
+                    ? selectedTableSchemaError.missingColumns.includes(col)
+                    : false;
+                  return (
+                    <span
+                      key={col}
+                      className={`px-2 py-0.5 font-mono-tabular text-[11px] border ${
+                        isPresent
+                          ? 'bg-emerald-500/10 text-emerald-900 border-emerald-600/35'
+                          : isMissing
+                          ? 'bg-red-500/15 text-red-900 border-red-600/45 font-bold'
+                          : 'bg-[#EFECE4] text-[#475569] border-[#0A1128]/15'
+                      }`}
+                    >
+                      {isPresent ? '✓ ' : isMissing ? '✕ ' : ''}
+                      {col}
+                    </span>
+                  );
+                })}
+              </div>
             </div>
 
             {validation && (
@@ -838,7 +1147,7 @@ export default function LiveAnalysisConsole() {
                     [
                       'Event-valid / parsed',
                       validation.processed_rows,
-                      'Passed event-contract-1 checks',
+                      'Passed schema & contract checks',
                     ],
                     [
                       'Event-invalid',
@@ -848,7 +1157,7 @@ export default function LiveAnalysisConsole() {
                     [
                       'Duplicate records',
                       validation.duplicate_records,
-                      'Flagged duplicate delivery keys',
+                      'Flagged duplicate records',
                     ],
                   ].map(([label, value, sub]) => (
                     <div
@@ -927,7 +1236,7 @@ export default function LiveAnalysisConsole() {
                 <button
                   type="button"
                   className={`${buttonBase} bg-[#F7F4EE]`}
-                  disabled={busy || working}
+                  disabled={busy || working || !session}
                   onClick={() => void download('structured')}
                 >
                   <Download size={15} className="text-[#1D4ED8]" />
@@ -939,7 +1248,9 @@ export default function LiveAnalysisConsole() {
                   disabled={busy || working}
                   onClick={() =>
                     void action(async () => {
-                      await api.remove(session!);
+                      if (session) {
+                        await api.remove(session);
+                      }
                       clearSession();
                     })
                   }
@@ -949,14 +1260,16 @@ export default function LiveAnalysisConsole() {
                 </button>
               </div>
               <span className="font-mono-tabular text-xs text-[#64748B]">
-                Session ID: {session?.job_id.slice(0, 12)}…
+                {session
+                  ? `Session ID: ${session.job_id.slice(0, 12)}…`
+                  : `Staged tables: ${validatedCount}/6 (syncs on ball_by_ball.csv upload)`}
               </span>
             </div>
           </section>
         )}
 
         {/* SECTION 03: PRESSURE ANALYSIS & REAL BACKEND TIMELINE */}
-        {job && (
+        {hasUploadSession && (
           <section id="pipeline-section" className={cardBase}>
             <div className="flex flex-wrap justify-between items-center gap-4 border-b border-[#0A1128]/12 pb-4 mb-5">
               <div>
@@ -971,23 +1284,28 @@ export default function LiveAnalysisConsole() {
               <div className="flex flex-wrap items-center gap-3">
                 <span
                   className={`px-2.5 py-1 font-mono-tabular text-xs uppercase font-semibold border ${
-                    job.analysis_available
+                    job?.analysis_available
                       ? 'bg-emerald-500/10 text-emerald-800 border-emerald-600/35'
                       : 'bg-amber-500/10 text-amber-900 border-amber-600/35'
                   }`}
                 >
-                  {job.analysis_available
+                  {job?.analysis_available
                     ? '6/6 Tables Validated · Ready'
-                    : `Awaiting ${job.missing_tables.length} Companion Table(s)`}
+                    : remainingMissingTables.length === 0
+                    ? 'Syncing 6/6 Tables to Session…'
+                    : `Awaiting ${remainingMissingTables.length} Table(s)`}
                 </span>
 
                 <button
                   type="button"
                   className={`${buttonBase} bg-[#0A1128] text-[#F7F4EE] hover:bg-[#1D4ED8] border-[#0A1128]`}
-                  disabled={busy || !job.analysis_available || job.status !== 'validated'}
+                  disabled={
+                    busy || !session || !job?.analysis_available || job.status !== 'validated'
+                  }
                   onClick={() =>
                     void action(async () => {
-                      await api.start(session!);
+                      if (!session || !job) return;
+                      await api.start(session);
                       setJob({ ...job, status: 'queued' });
                       setResult(null);
                       setEvidence(null);
@@ -1072,8 +1390,15 @@ export default function LiveAnalysisConsole() {
                   <Layers size={18} className="text-[#60A5FA] shrink-0" />
                 )}
                 <p role="status" className="font-mono-tabular text-xs sm:text-sm font-medium">
-                  Status: <strong className="uppercase text-[#60A5FA]">{job.status}</strong>
-                  {job.message ? ` — ${job.message}` : ''}
+                  Status:{' '}
+                  <strong className="uppercase text-[#60A5FA]">
+                    {job ? job.status : 'validated'}
+                  </strong>
+                  {job?.message
+                    ? ` — ${job.message}`
+                    : !job
+                    ? ` — ${validatedCount}/6 table(s) validated; supply remaining tables to enable analysis.`
+                    : ''}
                 </p>
               </div>
 
