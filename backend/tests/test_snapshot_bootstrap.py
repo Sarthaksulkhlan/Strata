@@ -53,3 +53,28 @@ class SnapshotBootstrapTests(unittest.TestCase):
             archive.writestr("private-snapshot/phase7a_v2_a/../escape.txt", "unsafe")
         with patch("urllib.request.urlopen", return_value=io.BytesIO(payload.getvalue())):
             with self.assertRaises(SnapshotBootstrapError): bootstrap_snapshot()
+
+    @unittest.skipUnless(os.environ.get('STRATA_APPROVED_SNAPSHOT'), 'Private approved snapshot required')
+    def test_complete_approved_snapshot_restart_and_corruption(self):
+        root = Path(os.environ['STRATA_APPROVED_SNAPSHOT'])
+        manifest = json.loads((root / 'manifest.json').read_text())
+        self.assertEqual(len(manifest['artifacts']), 23)
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w') as archive:
+            for name in ['manifest.json', *manifest['artifacts']]:
+                archive.writestr('private-snapshot/phase7a_v2_a/' + name, (root / name).read_bytes())
+        with patch('urllib.request.urlopen', side_effect=lambda *_a, **_kw: io.BytesIO(stream.getvalue())):
+            for _ in range(2):
+                output = bootstrap_snapshot()
+                self.assertEqual(len([p for p in output.rglob('*') if p.is_file()]), 24)
+                for name, digest in manifest['artifacts'].items():
+                    self.assertEqual(hashlib.sha256((output / name).read_bytes()).hexdigest(), digest)
+        # Integrity must still gate startup; a tampered required artifact fails.
+        broken = io.BytesIO()
+        with zipfile.ZipFile(broken, 'w') as archive:
+            for name in ['manifest.json', *manifest['artifacts']]:
+                data = (root / name).read_bytes()
+                archive.writestr('private-snapshot/phase7a_v2_a/' + name, b'corrupt' if name == 'summary.json' else data)
+        with patch('urllib.request.urlopen', return_value=io.BytesIO(broken.getvalue())):
+            with self.assertRaises(SnapshotBootstrapError):
+                bootstrap_snapshot()
