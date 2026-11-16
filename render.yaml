@@ -19,6 +19,7 @@ services:
 
   - type: web
     runtime: python
+    plan: free
     name: strata-aggregate-api
     rootDir: backend
     buildCommand: pip install -r requirements.txt

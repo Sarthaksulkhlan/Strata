@@ -1,0 +1,7 @@
+**
+!requirements.txt
+!integration_api/
+!integration_api/**/
+!integration_api/**/*.py
+!tests/
+!tests/linux_budget_server.py

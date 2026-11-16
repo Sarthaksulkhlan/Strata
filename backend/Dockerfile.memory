@@ -1,0 +1,9 @@
+FROM python:3.12.10-slim
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY integration_api/ integration_api/
+COPY tests/linux_budget_server.py tests/linux_budget_server.py
+ENV PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+ENV STRATA_LOCAL_FULL_DATASET=1 CLUTCHIQ_OUTPUT_SNAPSHOT=/snapshot/phase7a_v2_a
+CMD ["python", "-u", "tests/linux_budget_server.py"]
