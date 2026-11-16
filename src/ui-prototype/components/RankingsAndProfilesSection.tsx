@@ -448,7 +448,7 @@ export const RankingsAndProfilesSection: React.FC = () => {
               <div className="font-mono-tabular text-xs text-[#475569] group-hover:text-[#CBD5E1] truncate">
                 {batting.data[0]
                   ? `#01 Leader: ${batting.data[0].player.name} (${batting.data[0].pressure_score.toFixed(2)})`
-                  : '10 Verified Phase 7B Batting Profiles'}
+                  : 'Batting evidence loading or unavailable'}
               </div>
             </div>
             <span className="px-3 py-1.5 bg-[#1D4ED8] text-[#F7F4EE] font-mono-tabular text-xs font-semibold shrink-0">
@@ -471,7 +471,7 @@ export const RankingsAndProfilesSection: React.FC = () => {
               <div className="font-mono-tabular text-xs text-[#475569] group-hover:text-[#CBD5E1] truncate">
                 {bowling.data[0]
                   ? `#01 Leader: ${bowling.data[0].player.name} (${bowling.data[0].pressure_score.toFixed(2)})`
-                  : '10 Verified Phase 7B Bowling Profiles'}
+                  : 'Bowling evidence loading or unavailable'}
               </div>
             </div>
             <span className="px-3 py-1.5 bg-[#1D4ED8] text-[#F7F4EE] font-mono-tabular text-xs font-semibold shrink-0">

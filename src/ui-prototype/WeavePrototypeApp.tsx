@@ -31,7 +31,7 @@ export const WeavePrototypeApp: React.FC = () => {
           </a>
           <nav
             aria-label="Primary platform navigation"
-            className="hidden md:flex items-center gap-4 lg:gap-6 text-xs lg:text-sm font-medium text-[#334155]"
+            className="hidden xl:flex items-center gap-4 lg:gap-6 text-xs lg:text-sm font-medium text-[#334155]"
           >
             <a href="#storytelling" className="hover:text-[#0A1128] transition-colors whitespace-nowrap shrink-0">
               Landscape
@@ -73,7 +73,7 @@ export const WeavePrototypeApp: React.FC = () => {
           </button>
         </div>
         {/* Mobile Quick Jump Strip */}
-        <div className="md:hidden border-t border-[#0A1128]/10 bg-[#EFECE4]/90 px-4 py-1.5 flex items-center gap-3 overflow-x-auto text-[11px] font-mono-tabular text-[#334155]">
+        <div className="xl:hidden border-t border-[#0A1128]/10 bg-[#EFECE4]/90 px-4 py-1.5 flex items-center gap-3 overflow-x-auto text-[11px] font-mono-tabular text-[#334155]">
           <a href="#storytelling" className="whitespace-nowrap hover:text-[#0A1128]">Landscape</a>
           <span aria-hidden="true">·</span>
           <a href="#ecosystem" className="whitespace-nowrap hover:text-[#0A1128]">Ecosystem</a>
