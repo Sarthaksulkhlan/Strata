@@ -1,4 +1,4 @@
-"""Bounded private in-process jobs. Uploads are never logged or written to disk."""
+"""Bounded private jobs with ephemeral upload spooling; no durable storage."""
 import asyncio
 import csv
 import hashlib
@@ -8,14 +8,17 @@ import re
 import secrets
 import threading
 import time
+import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from .recovered.event_contract import IDS, normalize_event
-from .live_pipeline import METHOD, Unavailable, analyze, records
+from .live_pipeline import METHOD, Unavailable, analyze, records, normalize_deliveries
+from .private_csv import PrivateCsv, safe_chunks
 
 router = APIRouter(prefix='/api/v1/live')
 REQUIRED = {
@@ -32,8 +35,17 @@ REQUIRED = {
 MAX_BYTES = 2 * 1024 * 1024
 MAX_JOB_BYTES = 6 * 1024 * 1024
 MAX_ROWS = 10000
+FULL_LOCAL = os.environ.get('STRATA_LOCAL_FULL_DATASET') == '1'
+if FULL_LOCAL and os.environ.get('RENDER'):
+    raise RuntimeError('Full-dataset mode is local only; its memory budget is not supported on Render Free.')
+if FULL_LOCAL:
+    MAX_BYTES = 48 * 1024 * 1024
+    MAX_JOB_BYTES = 64 * 1024 * 1024
+    MAX_ROWS = 250000
 TTL = 900
 LIMIT = 2
+if FULL_LOCAL:
+    LIMIT = 1
 jobs = {}
 lock = threading.RLock()
 worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='live-analysis')
@@ -57,8 +69,15 @@ def inspect_csv(data, table='ball_by_ball'):
     if not data or b'\x00' in data:
         raise ValueError('CSV is empty or contains binary content.')
     try:
-        text = data.decode('utf-8-sig')
-        reader = csv.reader(io.StringIO(text), strict=True)
+        return inspect_stream(io.StringIO(data.decode('utf-8-sig')), hashlib.sha256(data).hexdigest(), table)
+    except UnicodeError as exc:
+        raise ValueError('Upload must be a well-formed UTF-8 CSV.') from exc
+
+
+def inspect_stream(stream, digest, table):
+    try:
+        stream.seek(0)
+        reader = csv.reader(stream, strict=True)
         header = next(reader)
         if len(header) != len(set(header)) or not header or len(header) > 100 or any(not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', c) for c in header):
             raise ValueError('CSV requires unique, original-format column names (at most 100).')
@@ -70,10 +89,11 @@ def inspect_csv(data, table='ball_by_ball'):
             raise ValueError('Missing required columns: ' + ', '.join(missing))
         for number, row in enumerate(reader, 1):
             if number > MAX_ROWS:
-                raise ValueError('Upload exceeds 10000 rows. Use a coherent subset of complete matches and training history.')
+                raise ValueError(f'Upload exceeds {MAX_ROWS} rows. No rows were truncated. Use local full-dataset mode for the complete pack.')
             if len(row) != len(header) or any(len(v) > 2048 for v in row):
                 raise ValueError('CSV has a malformed row or oversized cell.')
-        raw = pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False)
+        stream.seek(0)
+        raw = pd.read_csv(stream, dtype=str, keep_default_na=False)
     except (UnicodeError, csv.Error, StopIteration, pd.errors.ParserError) as exc:
         raise ValueError('Upload must be a well-formed UTF-8 CSV.') from exc
     if raw.empty:
@@ -84,13 +104,12 @@ def inspect_csv(data, table='ball_by_ball'):
             tokens = raw[c][raw[c].ne('')]
             if not tokens.str.fullmatch(r'[+-]?\d{1,15}(?:\.\d{1,6})?').all():
                 raise ValueError('Invalid or out-of-range numeric tokens in column ' + c + '. Scientific notation is unsupported.')
-    digest = hashlib.sha256(data).hexdigest()
-    frame = raw.copy()
+    frame = raw.copy(deep=False)
     frame.insert(0, 'source_record_number', range(1, len(frame)+1))
     frame.insert(0, 'source_member', table + '.csv')
     frame.insert(0, 'source_sha256', digest)
     if table == 'ball_by_ball':
-        normalized = pd.DataFrame([normalize_event(row) for row in raw.to_dict('records')])
+        normalized = normalize_deliveries(raw)
         duplicate = normalized.duplicated(['n_match_id','n_innings','n_innings_ball_num'], keep=False)
         normalized.loc[duplicate, 'event_valid'] = False
         normalized.loc[duplicate, 'reason_codes'] += ';duplicate_delivery_key'
@@ -134,27 +153,42 @@ def snapshot(job):
 def schema():
     return {'format':'Original Data Pack six CSV tables', 'required_columns':REQUIRED,
         'max_bytes':MAX_BYTES, 'max_job_bytes':MAX_JOB_BYTES, 'max_rows':MAX_ROWS,
-        'expires_seconds':TTL, 'limitation':DEPENDENCY, 'methodology':METHOD}
+        'expires_seconds':TTL, 'limitation':DEPENDENCY, 'methodology':METHOD,
+        'processing_mode':'local_full_dataset' if FULL_LOCAL else 'bounded_hosted',
+        'full_dataset_notice':'Full official pack processing requires local full-dataset mode; Render Free is not certified for this workload.'}
 
 
 async def receive(request, job, table):
     try:
         if request.headers.get('content-type','').split(';')[0].strip() not in ('text/csv','application/csv'):
             raise HTTPException(415, 'Send UTF-8 CSV with Content-Type: text/csv.')
-        async with asyncio.timeout(30):
-            data = bytearray()
-            async for chunk in request.stream():
-                if len(data)+len(chunk) > MAX_BYTES:
-                    raise HTTPException(413, 'CSV exceeds 2 MiB upload limit.')
-                data.extend(chunk)
-            if job['bytes']+len(data) > MAX_JOB_BYTES:
-                raise HTTPException(413, 'This job exceeds the combined 6 MiB limit.')
-        report, frame, normalized = await run_in_threadpool(inspect_csv, bytes(data), table)
+        size = 0
+        digest = hashlib.sha256()
+        # Private ephemeral spool: closes/removes on success, error or disconnect.
+        # No complete request bytearray, bytes copy, or decoded string is retained.
+        with tempfile.TemporaryFile(mode='w+b') as spool:
+            async with asyncio.timeout(120 if FULL_LOCAL else 30):
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_BYTES or job['bytes'] + size > MAX_JOB_BYTES:
+                        raise HTTPException(413, f'Upload exceeds configured limits ({MAX_BYTES} bytes per CSV; {MAX_JOB_BYTES} bytes per job). No partial table was accepted.')
+                    if b'\x00' in chunk:
+                        raise HTTPException(422, 'CSV contains binary content.')
+                    digest.update(chunk)
+                    spool.write(chunk)
+                if not size:
+                    raise HTTPException(422, 'CSV is empty.')
+            with lock: job['stages'].append(f'{table}: received {size} bytes; validating CSV and transforming records')
+            spool.seek(0)
+            with io.TextIOWrapper(spool, encoding='utf-8-sig', newline='') as text:
+                report, frame, normalized = await run_in_threadpool(inspect_stream, text, digest.hexdigest(), table)
+        structured = await run_in_threadpool(PrivateCsv, normalized) if table == 'ball_by_ball' else None
+        del normalized
         with lock:
             job['reports'][table] = report
             job['tables'][table] = frame
-            if table == 'ball_by_ball': job['structured'] = normalized
-            job['bytes'] += len(data)
+            if table == 'ball_by_ball': job['structured'] = structured
+            job['bytes'] += size
             job['stages'].extend([f'{table}: CSV read and schema checked', f'{table}: {len(frame)} rows transformed with Pandas'])
             job['status'] = 'validated'
     except TimeoutError:
@@ -208,7 +242,8 @@ class Cancelled(Exception):
 def process(job):
     def progress(stage):
         with lock:
-            if job['cancel']: raise Cancelled()
+            if job['cancel'] or time.monotonic() - job['created'] > TTL:
+                raise Cancelled()
             job['stages'].append(stage)
     try:
         with lock: job['status'] = 'running'
@@ -277,10 +312,8 @@ def player(job_id: str, player_id: int, request: Request, role: str = 'batting',
 
 
 def csv_response(frame, filename):
-    frame = frame.copy()
-    for c in frame.select_dtypes('object'):
-        frame[c] = frame[c].map(lambda v: "'" + v if isinstance(v,str) and v.lstrip().startswith(('=','+','-','@')) else v)
-    return Response(frame.to_csv(index=False), media_type='text/csv', headers={
+    chunks = frame.chunks() if isinstance(frame, PrivateCsv) else safe_chunks(frame)
+    return StreamingResponse(chunks, media_type='text/csv', headers={
         'Content-Disposition':f'attachment; filename="{filename}.csv"', 'Cache-Control':'no-store'})
 
 

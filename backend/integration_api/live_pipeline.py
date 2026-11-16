@@ -33,10 +33,44 @@ def records(frame):
     return json.loads(frame.to_json(orient='records'))
 
 
+def normalize_deliveries(frame, batch_rows=4096):
+    """Same row contract; avoid materializing 200,999 Python dictionaries at once."""
+    parts = []
+    for start in range(0, len(frame), batch_rows):
+        part = frame.iloc[start:start + batch_rows]
+        parts.append(pd.DataFrame(normalize_event(dict(zip(frame.columns, row)))
+                                  for row in part.itertuples(index=False, name=None)))
+    return pd.concat(parts, ignore_index=True)
+
+
+def reconstruct_batches(events, matches, competitions, progress, batch_matches=40):
+    """Bound reconstruction's temporary dictionaries to complete-match batches.
+
+    Only reconstruction is partitioned. Global validation, training quantiles,
+    baselines, bootstrap and ranking still run on the full eligible population.
+    The recovered function is unchanged, and both innings stay together.
+    """
+    groups = events.groupby('n_match_id', sort=True).indices
+    ids = list(groups)
+    absent = matches.loc[~matches.match_id.isin(ids)]
+    states, checks = [], []
+    for start in range(0, len(ids), batch_matches):
+        selected = ids[start:start + batch_matches]
+        indices = [index for mid in selected for index in groups[mid]]
+        metadata = matches.loc[matches.match_id.isin(selected)]
+        if start == 0:
+            metadata = pd.concat([metadata, absent])
+        state, _, check, _ = reconstruct(events.iloc[indices], metadata, competitions)
+        states.append(state)
+        checks.append(check)
+        progress(f'Reconstructed {min(start + batch_matches, len(ids))} of {len(ids)} complete match groups')
+    return pd.concat(states, ignore_index=True), pd.concat(checks, ignore_index=True).sort_values('match_id').reset_index(drop=True)
+
+
 def analyze(tables, progress):
     """Returns JSON-safe aggregates plus private event frames for owned evidence queries."""
     progress('Validating six-table keys, identities and relationships')
-    raw = {k: v.copy() for k, v in tables.items()}
+    raw = tables  # Recovered validators derive their own typed views; no input mutation.
     for col in IDS:
         if raw['ball_by_ball'][col].map(lambda v: integer(v) is None or integer(v) <= 0).any():
             raise Unavailable('Invalid delivery identifier or ball numbering in ' + col + '. Inspect validation issues; no identifiers were inferred.')
@@ -49,19 +83,28 @@ def analyze(tables, progress):
     dates = typed['matches'].match_date
     if not dates.str.fullmatch(r'\d{4}-\d{2}-\d{2}').all() or pd.to_datetime(dates, errors='coerce').isna().any():
         raise Unavailable('Match dates must be valid ISO dates (YYYY-MM-DD). No dates were inferred.')
+    # Typed deliveries and the consensus bridge are no longer needed after
+    # global validation. Retain only metadata and resolved player aliases.
+    typed.pop('ball_by_ball')
+    del _
     progress('Normalizing deliveries using event-contract-1')
     b = raw['ball_by_ball']
-    derived = pd.DataFrame([normalize_event(row) for row in b.to_dict('records')])
+    derived = normalize_deliveries(b)
     for col in [c for c in derived if c.startswith('n_')] + ['batter_runs', 'extras_runs', 'team_runs', 'bowler_runs', 'dismissed_batter_id']:
         derived[col] = pd.array(derived[col], dtype='Int64')
     for col in ('legal_ball', 'ball_faced', 'candidate_legal_ball', 'team_wicket', 'bowler_wicket'):
         derived[col] = pd.array(derived[col], dtype='boolean')
-    events = pd.concat([b.reset_index(drop=True), derived], axis=1)
+    # Recovered reconstruction consumes normalized fields, not raw runs/names.
+    # Preserve raw input for validation/traceability without duplicating it here.
+    provenance = b[['source_record_number', 'source_sha256', 'source_member']]
+    events = pd.concat([provenance.reset_index(drop=True), derived], axis=1)
+    del derived
     bad = set(issues.loc[issues.table.eq('ball_by_ball'), 'source_record_number'])
     events['relationship_valid'] = ~events.source_record_number.isin(bad)
     progress('Reconstructing pre-delivery states and reconciling complete innings')
-    states, _, matches, _ = reconstruct(events, typed['matches'], typed['competitions'])
+    states, matches = reconstruct_batches(events, typed['matches'], typed['competitions'], progress)
     f = states[states.context_valid & states.innings.isin([1, 2]) & ~states.terminal_before].copy()
+    del states, typed
     if f.empty:
         return {'status':'unavailable', 'message':'No complete, reconciled ordinary T20 match contexts are usable.',
                 'issues':records(issues.head(100)), 'match_checks':records(matches)}, {}
@@ -74,6 +117,7 @@ def analyze(tables, progress):
     # false. Preserve that behavior across the nullable in-memory boundary.
     f['striker_dismissed'] = f.n_striker_id.eq(f.dismissed_batter_id).fillna(False)
     f = f.merge(entry_roles(events), on='source_record_number', validate='one_to_one')
+    del events
     progress('Fitting pre-2024 context thresholds and applying Phase 7A pressure rules')
     if not f.match_date.lt('2024-01-01').any():
         raise Unavailable('No usable pre-2024 training matches. Historical thresholds cannot be fitted.')

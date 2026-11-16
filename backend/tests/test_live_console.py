@@ -84,7 +84,10 @@ class CsvTests(unittest.TestCase):
 
     def test_formula_safe_export(self):
         response=live.csv_response(pd.DataFrame({'name':['=1+1',' @SUM(1)','normal']}),'test')
-        text=response.body.decode()
+        import asyncio
+        async def collect():
+            return ''.join([chunk.decode() if isinstance(chunk, bytes) else chunk async for chunk in response.body_iterator])
+        text=asyncio.run(collect())
         self.assertIn("'=1+1",text)
         self.assertIn("' @SUM(1)",text)
 
