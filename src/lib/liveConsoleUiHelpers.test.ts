@@ -121,7 +121,7 @@ test('validateCsvContentForTable validates each companion CSV against its own sc
   const compRes = validateCsvContentForTable(compCsv, 'competitions', MOCK_SCHEMA);
   assert.equal(compRes.ok, true);
   if (compRes.ok) {
-    assert.equal(compRes.validation.processed_rows, 1);
+    assert.equal(compRes.validation.original_rows, 1);
     assert.deepEqual(compRes.presentColumns, ['comp_id', 'comp_name', 'match_format']);
   }
 
@@ -183,7 +183,7 @@ test('computeTableChecklist reflects validated, staged, and missing tables accur
   );
   const compItem = staged.find((t) => t.key === 'competitions');
   const bbbItem = staged.find((t) => t.key === 'ball_by_ball');
-  assert.equal(compItem?.status, 'validated');
+  assert.equal(compItem?.status, 'staged');
   assert.equal(compItem?.uploadedSize, 1024);
   assert.equal(bbbItem?.status, 'missing');
 
@@ -249,4 +249,26 @@ test('getEvidenceTierStyle, formatBytesCompact and formatExpiryTimer format tele
   assert.equal(getEvidenceTierStyle('limited').label, 'limited');
   assert.equal(formatBytesCompact(2048), '2.0 KiB');
   assert.equal(formatExpiryTimer(845), '14m 05s');
+});
+
+
+test('browser checks never fabricate backend hashes, normalization or event validity', () => {
+  const checked = validateCsvContentForTable('comp_id,comp_name,match_format\n1,Example,T20\n', 'competitions');
+  assert.equal(checked.ok, true);
+  if (checked.ok) {
+    assert.equal(checked.validation.preliminary, true);
+    assert.equal(checked.validation.sha256, '');
+    assert.equal(checked.validation.processed_rows, 0);
+    assert.deepEqual(checked.validation.structured_preview, []);
+  }
+  assert.equal(buildTimelineStages(null, ['competitions: browser header checked'])[0].category, 'BROWSER PRECHECK');
+});
+
+test('bounded header checks use each table schema without claiming row validation', () => {
+  for (const table of CANONICAL_LIVE_TABLES) {
+    const checked = validateCsvContentForTable(REQUIRED_TABLE_SCHEMAS[table.key].join(','), table.key, MOCK_SCHEMA, true);
+    assert.equal(checked.ok, true);
+    if (checked.ok) assert.equal(checked.validation.preliminary, true);
+  }
+  assert.equal(validateCsvContentForTable('comp_id,comp_name', 'competitions', MOCK_SCHEMA, true).ok, false);
 });

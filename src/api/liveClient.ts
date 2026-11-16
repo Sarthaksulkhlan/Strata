@@ -1,13 +1,14 @@
 export type TableRow = Record<string, string | number | boolean | null>;
 export type LiveRole = 'batting' | 'bowling';
 export interface Validation {
+  preliminary?: boolean;
   original_rows:number; processed_rows:number; rejected_rows:number; duplicate_records:number;
   columns:string[]; normalized_columns:string[]; additional_columns:string[];
   missing_values:Record<string,number>; raw_preview:TableRow[]; structured_preview:TableRow[];
   issues:TableRow[]; sha256:string; notice:string;
 }
 export interface Method { version:string; description:string; pressure:string; scores:string; evidence:string; limitations:string[] }
-export interface LiveSchema { required_columns:Record<string,string[]>; max_bytes:number; max_rows:number; expires_seconds:number; limitation:string; methodology:Method }
+export interface LiveSchema { required_columns:Record<string,string[]>; max_bytes:number; max_rows:number; max_job_bytes?:number; full_dataset_notice?:string; expires_seconds:number; limitation:string; methodology:Method }
 export interface Job {
   status:'receiving'|'validated'|'queued'|'running'|'complete'|'unavailable'|'failed'|'cancelled';
   stages:string[]; validation:Record<string,Validation>; missing_tables:string[];
@@ -34,7 +35,7 @@ export class LiveApiError extends Error {
 export function createLiveApi(base:string) {
   const url = `${base.replace(/\/$/,'')}/api/v1/live`;
   async function request<T>(path:string, session?:Session, init:RequestInit={}) : Promise<T> {
-    const response = await fetch(url+path, {...init, signal:AbortSignal.timeout(60000), cache:'no-store',
+    const response = await fetch(url+path, {...init, signal:AbortSignal.timeout(init.body ? 180000 : 60000), cache:'no-store',
       headers:{Accept:'application/json', ...(session ? {'X-Analysis-Token':session.access_token} : {}), ...init.headers}});
     if (!response.ok) {
       const body = await response.json().catch(()=>null);

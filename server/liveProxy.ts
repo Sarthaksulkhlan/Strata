@@ -5,7 +5,8 @@ export function mountLiveProxy(app: express.Express, backend: string, origin: st
   app.use('/api/v1/live-console', (_req, res) => {
     res.status(410).json({detail:'This unreviewed analysis contract has been replaced. Open the Live Console and use /api/v1/live/schema.'});
   });
-  app.use('/api/v1/live', express.raw({type:['text/csv','application/csv'],limit:'2mb'}), async (req, res) => {
+  const full = process.env.STRATA_LOCAL_FULL_DATASET === '1' && !process.env.RENDER;
+  app.use('/api/v1/live', express.raw({type:['text/csv','application/csv'],limit:full?'48mb':'2mb'}), async (req, res) => {
     res.setHeader('Cache-Control','no-store');
     res.setHeader('X-Content-Type-Options','nosniff');
     if(!['GET','POST','DELETE'].includes(req.method)) {
@@ -20,7 +21,7 @@ export function mountLiveProxy(app: express.Express, backend: string, origin: st
       const key=req.get('X-Analysis-Token');if(key)headers['X-Analysis-Token']=key;
       const type=req.get('Content-Type');if(type)headers['Content-Type']=type;
       const upstream=await fetch(`${backend.replace(/\/$/,'')}/api/v1/live${req.url}`,{
-        method:req.method,headers,signal:AbortSignal.timeout(60000),
+        method:req.method,headers,signal:AbortSignal.timeout(full?180000:60000),
         body:Buffer.isBuffer(req.body)?new Uint8Array(req.body):undefined,
       });
       res.status(upstream.status);
@@ -35,6 +36,6 @@ export function mountLiveProxy(app: express.Express, backend: string, origin: st
   // Express parser errors must not expose stack traces or server paths.
   app.use('/api/v1/live', (error: unknown, _req:express.Request, res:express.Response, _next:express.NextFunction) => {
     const tooLarge=typeof error==='object'&&error!==null&&'type' in error&&error.type==='entity.too.large';
-    res.status(tooLarge?413:400).json({detail:tooLarge?'CSV exceeds 2 MiB upload limit.':'Invalid upload body.'});
+    res.status(tooLarge?413:400).json({detail:tooLarge?`CSV exceeds ${full?48:2} MiB proxy upload limit.`:'Invalid upload body.'});
   });
 }

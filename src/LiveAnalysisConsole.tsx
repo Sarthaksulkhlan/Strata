@@ -1,3 +1,4 @@
+import { PressureExplainer } from './components/PressureExplainer';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
@@ -56,7 +57,7 @@ const api = createLiveApi(direct ? configuredBase : '');
 
 const buttonBase =
   'inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs sm:text-sm font-mono-tabular font-semibold border border-[#0A1128]/25 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#0A1128]/5 transition-colors cursor-pointer';
-const cardBase = 'border border-[#0A1128]/15 bg-[#EFECE4]/75 p-5 sm:p-7 shadow-[0_1px_0_rgba(10,17,40,0.04)]';
+const cardBase = 'min-w-0 border border-[#0A1128]/15 bg-[#EFECE4]/75 p-5 sm:p-7 shadow-[0_1px_0_rgba(10,17,40,0.04)]';
 
 const format = (value: unknown): string =>
   value === null || value === undefined
@@ -82,7 +83,7 @@ function DataTable({ rows, label }: { rows: TableRow[]; label: string }) {
   const cols = Object.keys(rows[0]);
   return (
     <div
-      className="max-h-80 overflow-auto border border-[#0A1128]/15 bg-[#F7F4EE]"
+      className="min-w-0 max-w-full max-h-80 overflow-auto border border-[#0A1128]/15 bg-[#F7F4EE]"
       tabIndex={0}
       role="region"
       aria-label={label}
@@ -135,6 +136,7 @@ export default function LiveAnalysisConsole() {
   >([]);
   const [stagedValidations, setStagedValidations] = useState<Record<string, Validation>>({});
   const [stagedStages, setStagedStages] = useState<string[]>([]);
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
   const [schemaErrors, setSchemaErrors] = useState<
     Record<string, TableSchemaValidationFailure>
   >({});
@@ -218,6 +220,15 @@ export default function LiveAnalysisConsole() {
     };
   }, [working, session]);
 
+  useEffect(() => {
+    if (!job) { setRemainingSeconds(0); return; }
+    const deadline = Date.now() + job.expires_in_seconds * 1000;
+    const tick = () => setRemainingSeconds(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [job]);
+
   async function action(task: () => Promise<void>) {
     setBusy(true);
     setError('');
@@ -258,7 +269,7 @@ export default function LiveAnalysisConsole() {
         }
         if (f.size > schema.max_bytes || !f.size) {
           throw new Error(
-            `${idResult.canonicalFilename}: file must be non-empty and at most 2 MiB.`
+            `${idResult.canonicalFilename}: file must be non-empty and at most ${formatBytesCompact(schema.max_bytes)}.`
           );
         }
         if (seenInBatch.has(idResult.tableKey)) {
@@ -290,7 +301,7 @@ export default function LiveAnalysisConsole() {
           (fn) => !alreadyValidatedTables.has(fn.replace(/\.csv$/i, ''))
         );
         throw new Error(
-          `${dup.canonicalFilename} is already uploaded and validated in this session (${alreadyValidatedTables.size}/6 tables ready). ${
+          `${dup.canonicalFilename} is already supplied in this session (${alreadyValidatedTables.size}/6 tables ready). ${
             remaining.length
               ? `Remaining tables needed: ${remaining.join(', ')}.`
               : 'All 6 tables are ready.'
@@ -308,6 +319,12 @@ export default function LiveAnalysisConsole() {
         );
       }
 
+      const sizes = new Map(files.map(file => [file.tableKey, file.size]));
+      for (const item of batchToValidate) sizes.set(item.tableKey, item.file.size);
+      if (schema.max_job_bytes && [...sizes.values()].reduce((a, b) => a + b, 0) > schema.max_job_bytes) {
+        throw new Error(`Combined upload exceeds ${formatBytesCompact(schema.max_job_bytes)}. No partial analysis will run.`);
+      }
+
       // 3. Validate each CSV file independently against its OWN required table schema
       const validatedItems: Array<{
         file: File;
@@ -318,8 +335,11 @@ export default function LiveAnalysisConsole() {
 
       for (const item of batchToValidate) {
         setActivity(`Validating ${item.canonicalFilename} against ${item.tableKey} schema…`);
-        const rawText = await item.file.text();
-        const check = validateCsvContentForTable(rawText, item.tableKey, schema);
+        // Read only the bounded header in the browser. The backend checks every row.
+        const prefix = await item.file.slice(0, 65536).text();
+        const newline = prefix.search(/[\r\n]/);
+        if (newline < 0) throw new Error(`${item.canonicalFilename}: missing header newline or oversized header.`);
+        const check = validateCsvContentForTable(prefix.slice(0, newline), item.tableKey, schema, true);
         if (!check.ok) {
           setSchemaErrors((prev) => ({ ...prev, [item.tableKey]: check }));
           setSelectedTable(item.tableKey);
@@ -404,7 +424,7 @@ export default function LiveAnalysisConsole() {
         }
         setSelectedTable(validatedItems[validatedItems.length - 1].tableKey);
       } else {
-        // Companion file(s) uploaded before ball_by_ball.csv: stage locally with full schema validation
+        // Companion file(s) uploaded before ball_by_ball.csv: stage locally with preliminary header checks
         for (const comp of companionItems) {
           stagedCompanionFiles.current.set(comp.tableKey, comp.file);
           setStagedValidations((prev) => ({
@@ -413,8 +433,7 @@ export default function LiveAnalysisConsole() {
           }));
           setStagedStages((prev) => [
             ...prev.filter((s) => !s.startsWith(`${comp.tableKey}:`)),
-            `${comp.tableKey}: CSV read and schema checked`,
-            `${comp.tableKey}: ${comp.validation.processed_rows} rows validated against ${comp.tableKey} schema`,
+            `${comp.tableKey}: browser header checked; backend validation pending`,
           ]);
         }
         setSelectedTable(validatedItems[validatedItems.length - 1].tableKey);
@@ -646,7 +665,7 @@ export default function LiveAnalysisConsole() {
                   JOB PAYLOAD
                 </div>
                 <div className="font-mono-tabular text-xs font-bold text-[#F7F4EE] mt-0.5">
-                  {formatBytesCompact(totalUploadedBytes)} / 6.00 MiB
+                  {formatBytesCompact(totalUploadedBytes)} / {formatBytesCompact(schema?.max_job_bytes)}
                 </div>
               </div>
 
@@ -655,7 +674,7 @@ export default function LiveAnalysisConsole() {
                   SESSION TTL
                 </div>
                 <div className="font-mono-tabular text-xs font-bold text-[#93C5FD] mt-0.5">
-                  {job ? formatExpiryTimer(job.expires_in_seconds) : '15m 00s'}
+                  {job ? formatExpiryTimer(remainingSeconds) : '15m 00s'}
                 </div>
               </div>
             </div>
@@ -665,10 +684,10 @@ export default function LiveAnalysisConsole() {
           <div className="border-l-4 border-[#1D4ED8] bg-[#EFECE4] p-4 text-xs sm:text-sm text-[#334155] flex items-start gap-3">
             <ShieldCheck className="w-5 h-5 text-[#1D4ED8] shrink-0 mt-0.5" />
             <div className="leading-relaxed">
-              <strong className="text-[#0A1128]">Temporary in-memory session:</strong> files,
-              results and access keys stay strictly in memory. They expire after 15 minutes and
+              <strong className="text-[#0A1128]">Temporary private session:</strong> files,
+              uploads use private temporary storage; results and access keys are temporary. Sessions expire after 15 minutes and
               disappear on server restarts. Leaving this page loses access; there is no saved
-              history. Up to 2 MiB / 10,000 rows per CSV and 6 MiB per job. Use complete matches
+              history. Up to {formatBytesCompact(schema?.max_bytes)} / {schema?.max_rows.toLocaleString()} rows per CSV and {formatBytesCompact(schema?.max_job_bytes)} per job. {schema?.full_dataset_notice} Use complete matches
               with historical pre-2024 training coverage.
             </div>
           </div>
@@ -711,6 +730,8 @@ export default function LiveAnalysisConsole() {
         )}
 
         {/* SECTION 01: SOURCE DATA UPLOAD & 6-TABLE SCHEMA CHECKLIST */}
+        <PressureExplainer methodology={schema?.methodology} />
+
         <section id="upload-section" className={cardBase} aria-labelledby="upload-title">
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 border-b border-[#0A1128]/12 pb-4 mb-6">
             <div>
@@ -858,7 +879,7 @@ export default function LiveAnalysisConsole() {
             <div className="lg:col-span-7 space-y-3">
               <div className="flex items-center justify-between gap-2 font-mono-tabular text-xs text-[#475569]">
                 <span>SIX-TABLE DATA PACK CHECKLIST ({validatedCount}/6 VALIDATED)</span>
-                <span>MAX 2 MiB / 10,000 ROWS PER CSV</span>
+                <span>MAX {formatBytesCompact(schema?.max_bytes)} / {schema?.max_rows.toLocaleString()} ROWS PER CSV</span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -907,7 +928,7 @@ export default function LiveAnalysisConsole() {
                             ) : (
                               <>
                                 <Clock size={12} />
-                                <span>{item.status === 'missing' ? 'MISSING' : 'REQUIRED'}</span>
+                                <span>{item.status === 'staged' ? 'BROWSER CHECKED' : item.status === 'missing' ? 'MISSING' : 'REQUIRED'}</span>
                               </>
                             )}
                           </span>
@@ -930,8 +951,7 @@ export default function LiveAnalysisConsole() {
                         {item.validation ? (
                           <>
                             <span className="text-[#0A1128] font-semibold">
-                              {item.validation.processed_rows.toLocaleString()} /{' '}
-                              {item.validation.original_rows.toLocaleString()} valid rows
+                              {item.status === 'staged' ? 'Backend validation pending' : `${item.validation.processed_rows.toLocaleString()} / ${item.validation.original_rows.toLocaleString()} valid rows`}
                             </span>
                             <button
                               type="button"
@@ -1025,16 +1045,16 @@ export default function LiveAnalysisConsole() {
                 </h2>
               </div>
 
-              <label className="inline-flex items-center gap-2 text-xs sm:text-sm font-mono-tabular">
+              <label className="flex min-w-0 max-w-full flex-col items-start sm:flex-row sm:items-center gap-2 text-xs sm:text-sm font-mono-tabular">
                 <span className="text-[#475569]">Inspect table</span>
                 <select
-                  className="border border-[#0A1128]/25 px-3 py-1.5 bg-[#F7F4EE] font-mono-tabular text-xs font-semibold text-[#0A1128] max-w-full"
+                  className="border border-[#0A1128]/25 px-3 py-1.5 bg-[#F7F4EE] font-mono-tabular text-xs font-semibold text-[#0A1128] min-w-0 max-w-full w-full sm:w-auto"
                   value={selectedTable}
                   onChange={(e) => setSelectedTable(e.target.value)}
                 >
                   {CANONICAL_LIVE_TABLES.map((t) => (
                     <option key={t.key} value={t.key}>
-                      {t.filename} ({effectiveValidation[t.key] ? 'Validated' : schemaErrors[t.key] ? 'Schema Error' : 'Pending'})
+                      {t.filename} ({job?.validation[t.key] ? 'Validated' : stagedValidations[t.key] ? 'Browser checked' : schemaErrors[t.key] ? 'Schema Error' : 'Pending'})
                     </option>
                   ))}
                 </select>
@@ -1139,7 +1159,8 @@ export default function LiveAnalysisConsole() {
               </div>
             </div>
 
-            {validation && (
+            {validation?.preliminary && <p className="p-4 border-l-2 border-[#1D4ED8] text-sm">{validation.notice} Upload ball_by_ball.csv to send staged companion files to the backend.</p>}
+            {validation && !validation.preliminary && (
               <>
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
                   {[
@@ -1262,7 +1283,7 @@ export default function LiveAnalysisConsole() {
               <span className="font-mono-tabular text-xs text-[#64748B]">
                 {session
                   ? `Session ID: ${session.job_id.slice(0, 12)}…`
-                  : `Staged tables: ${validatedCount}/6 (syncs on ball_by_ball.csv upload)`}
+                  : `Browser-checked tables: ${Object.keys(stagedValidations).length}/6 (backend validation pending)`}
               </span>
             </div>
           </section>
@@ -1319,8 +1340,8 @@ export default function LiveAnalysisConsole() {
             </div>
 
             <p className="text-xs sm:text-sm text-[#475569] mb-5">
-              Stages below come directly from completed ingestion work and actual backend analysis
-              execution. No simulated percentages or fabricated progress steps are shown.
+              Browser prechecks are labelled separately. Once a backend session exists, the timeline shows
+              actual ingestion and analysis stages returned by the backend; no simulated progress is used.
             </p>
 
             {/* Backend Stages Timeline */}
@@ -1392,7 +1413,7 @@ export default function LiveAnalysisConsole() {
                 <p role="status" className="font-mono-tabular text-xs sm:text-sm font-medium">
                   Status:{' '}
                   <strong className="uppercase text-[#60A5FA]">
-                    {job ? job.status : 'validated'}
+                    {job ? job.status : 'browser checked'}
                   </strong>
                   {job?.message
                     ? ` — ${job.message}`
@@ -1501,7 +1522,7 @@ export default function LiveAnalysisConsole() {
                     {/* Top 10 Batters Under Pressure Card */}
                     <div
                       id="live-top-10-batters"
-                      className="border border-[#0A1128]/15 bg-[#F7F4EE] p-4 sm:p-5 scroll-mt-24 space-y-3"
+                      className="min-w-0 border border-[#0A1128]/15 bg-[#F7F4EE] p-4 sm:p-5 scroll-mt-24 space-y-3"
                     >
                       <div className="flex items-center justify-between gap-2 border-b border-[#0A1128]/12 pb-3">
                         <div>
@@ -1588,7 +1609,7 @@ export default function LiveAnalysisConsole() {
                     {/* Top 10 Bowlers Under Pressure Card */}
                     <div
                       id="live-top-10-bowlers"
-                      className="border border-[#0A1128]/15 bg-[#F7F4EE] p-4 sm:p-5 scroll-mt-24 space-y-3"
+                      className="min-w-0 border border-[#0A1128]/15 bg-[#F7F4EE] p-4 sm:p-5 scroll-mt-24 space-y-3"
                     >
                       <div className="flex items-center justify-between gap-2 border-b border-[#0A1128]/12 pb-3">
                         <div>
@@ -1901,7 +1922,7 @@ export default function LiveAnalysisConsole() {
                     </div>
 
                     <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#0A1128]/12">
-                      <div className="flex gap-3">
+                      <div className="flex flex-wrap gap-3">
                         <button
                           type="button"
                           className={buttonBase}

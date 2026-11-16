@@ -246,21 +246,6 @@ export function parseCsvMatrix(rawText: string): string[][] {
   return rows;
 }
 
-function fallbackHexDigest(text: string): string {
-  // Deterministic 64-char hex fingerprint used when synchronous hashing is needed
-  let h1 = 0xdeadbeef ^ text.length;
-  let h2 = 0x41c6ce57 ^ text.length;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  const part = ((h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0'));
-  return part.repeat(4);
-}
-
 export interface TableSchemaValidationFailure {
   ok: false;
   tableKey: CanonicalTableKey;
@@ -313,7 +298,7 @@ export function validateCsvContentForTable(
   rawText: string,
   tableKey: CanonicalTableKey,
   schema?: LiveSchema | null,
-  sha256Override?: string
+  headerOnly = false
 ): TableSchemaValidationResult {
   const filename = `${tableKey}.csv`;
   const requiredColumns = getRequiredColumnsForTable(tableKey, schema);
@@ -361,7 +346,7 @@ export function validateCsvContentForTable(
     };
   }
 
-  const header = rows[0].map((c) => c.trim());
+  const header = rows[0];
   const presentColumns = requiredColumns.filter((col) => header.includes(col));
   const missingColumns = requiredColumns.filter((col) => !header.includes(col));
   const additionalColumns = header.filter((col) => !requiredColumns.includes(col));
@@ -371,7 +356,7 @@ export function validateCsvContentForTable(
   if (
     header.length !== uniqueHeader.size ||
     header.length > 100 ||
-    header.some((c) => !/^[a-z][a-z0-9_]{0,63}$/.test(c))
+    header.some((c) => !/^[a-z][a-z0-9_]{0,63}$/.test(c) || /^(source_|n_)/.test(c))
   ) {
     return {
       ok: false,
@@ -397,6 +382,16 @@ export function validateCsvContentForTable(
       additionalColumns,
       error: `${filename}: Missing required columns: ${missingColumns.join(', ')}`,
     };
+  }
+
+  if (headerOnly) {
+    return { ok: true, tableKey, filename, requiredColumns, presentColumns,
+      missingColumns: [], additionalColumns, validation: {
+        preliminary: true, original_rows: 0, processed_rows: 0, rejected_rows: 0,
+        duplicate_records: 0, columns: header, normalized_columns: [], additional_columns: additionalColumns,
+        missing_values: {}, raw_preview: [], structured_preview: [], issues: [], sha256: '',
+        notice: 'Browser header check only. Row counts, event validity, relationships and SHA-256 await backend validation.',
+      } };
   }
 
   const dataRows = rows.slice(1);
@@ -491,7 +486,7 @@ export function validateCsvContentForTable(
     }
   }
 
-  const sha256 = sha256Override || fallbackHexDigest(rawText);
+  const sha256 = ''; // Only the backend hashes the original uploaded bytes.
   const previewSlice = dataRows.slice(0, 10);
   const rawPreview: TableRow[] = previewSlice.map((row) => {
     const obj: TableRow = {};
@@ -501,33 +496,22 @@ export function validateCsvContentForTable(
     return obj;
   });
 
-  const structuredPreview: TableRow[] = previewSlice.map((row, rIdx) => {
-    const obj: TableRow = {
-      source_sha256: sha256,
-      source_member: filename,
-      source_record_number: rIdx + 1,
-    };
-    header.forEach((col, i) => {
-      obj[col] = row[i];
-    });
-    return obj;
-  });
-
   const validation: Validation = {
+    preliminary: true,
     original_rows: dataRows.length,
-    processed_rows: dataRows.length,
+    processed_rows: 0,
     rejected_rows: 0,
     duplicate_records: duplicateRecords,
     columns: header,
     additional_columns: additionalColumns,
-    normalized_columns: ['source_sha256', 'source_member', 'source_record_number', ...header],
+    normalized_columns: [],
     missing_values: missingValues,
     raw_preview: rawPreview,
-    structured_preview: structuredPreview,
+    structured_preview: [],
     issues: [],
     sha256,
     notice:
-      'No source rows were discarded. Event-invalid rows are retained for diagnostics. Relationship and match consistency checks run after all six tables are supplied; empty optional dismissal/revision fields are not errors.',
+      'Preliminary browser checks only. Parsed row counts and raw previews are local. Event validity, normalized records, relationships and SHA-256 await backend validation.',
   };
 
   return {
@@ -543,7 +527,7 @@ export function validateCsvContentForTable(
 }
 
 export interface TableChecklistItem extends CanonicalTableDescriptor {
-  status: 'validated' | 'schema_error' | 'missing' | 'awaiting_initial';
+  status: 'validated' | 'staged' | 'schema_error' | 'missing' | 'awaiting_initial';
   requiredColumnCount: number;
   requiredColumns: string[];
   validation: Validation | null;
@@ -582,7 +566,7 @@ export function computeTableChecklist(
 
     let status: TableChecklistItem['status'] = 'awaiting_initial';
     if (isValidated) {
-      status = 'validated';
+      status = job?.validation?.[desc.key] ? 'validated' : 'staged';
     } else if (schemaError) {
       status = 'schema_error';
     } else if (hasAnyUploadActivity) {
@@ -605,7 +589,7 @@ export interface TimelineStageDisplay {
   index: number;
   stepNumber: string;
   rawText: string;
-  category: 'TABLE INGESTION' | 'PHASE 7A PIPELINE';
+  category: 'TABLE INGESTION' | 'PHASE 7A PIPELINE' | 'BROWSER PRECHECK';
   tableKey: string | null;
   state: 'completed' | 'active' | 'failed';
 }
@@ -626,7 +610,7 @@ export function buildTimelineStages(
     const isLast = idx === sourceStages.length - 1;
     const tableMatch = rawText.match(/^([a-z_]+):\s+/);
     const tableKey = tableMatch ? tableMatch[1] : null;
-    const category = tableKey ? 'TABLE INGESTION' : 'PHASE 7A PIPELINE';
+    const category = job?.stages?.length ? (tableKey ? 'TABLE INGESTION' : 'PHASE 7A PIPELINE') : 'BROWSER PRECHECK';
 
     let state: TimelineStageDisplay['state'] = 'completed';
     if (isLast && working) {
