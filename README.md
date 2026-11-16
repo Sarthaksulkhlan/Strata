@@ -1,5 +1,63 @@
 # STRATA
 
+[Live website](https://strata-y6yz.onrender.com/) | [API health](https://strataa.onrender.com/healthz) | [System architecture](docs/SYSTEM_ARCHITECTURE.md) | [Demo script](docs/DEMO_VIDEO_SCRIPT.md) | [Download script PDF](docs/DEMO_VIDEO_SCRIPT.pdf)
+
+## Current implementation and limitations
+
+The repository now includes FastAPI in `backend/`, recovered Pandas/NumPy
+analytics in `backend/integration_api/recovered/`, and the React/TypeScript/Vite
+frontend. There is no persistent database. The architecture below contains older
+frontend-era illustrations; the authoritative current architecture and six-table
+data flow are in [SYSTEM_ARCHITECTURE.md](docs/SYSTEM_ARCHITECTURE.md).
+
+Season averages can hide match context. STRATA compares performance during
+pressure situations with historical expectations and reports evidence strength.
+It does not establish an innate clutch trait or auction suitability.
+
+Training precedes 2024-01-01; evaluation starts on that date. Historical cells
+require 100 events and 10 matches. Batting adjusted rate is 100 times supported
+residual runs divided by balls faced; bowling uses -6 times residual runs divided
+by legal balls. Residuals are observed minus historical expected runs. Wickets
+are reported, not added as an invented score bonus.
+
+Match bootstrap uses 1,000 resamples and seed 7007. Empirical-Bayes shrinkage
+pulls noisy estimates toward the cohort mean. Ordering is evidence tier, then
+descending score, then player ID. Strong evidence requires 60 exposures and
+8 matches with interval half-width at most 25 batting / 1.5 bowling; moderate
+requires 30/5 and 40/2.5; limited requires 12/3. Missing public metrics remain
+null. Read Methodology for exact pressure gates, formulas and limitations.
+
+Hosted uploads remain bounded to 2 MiB/file, 6 MiB/job and 10,000 rows/file.
+Local full mode allows 48 MiB/file, 64 MiB/job and 250,000 rows/file. Recent full
+pack runs exceeded the 15-minute deadline; Render Free full-pack operation is
+unverified. Approved production rankings remain a separate snapshot flow.
+
+Backend setup from repository root: create a Python 3.12 virtual environment,
+install `backend/requirements-test.txt`, and start
+`python -m uvicorn integration_api.app:app --app-dir backend --port 8000`.
+Set `CLUTCHIQ_OUTPUT_SNAPSHOT` to `<private-approved-snapshot-directory>` and
+`CLUTCHIQ_CORS_ORIGINS` to `<exact-frontend-origin>`. Set the frontend's
+`VITE_API_BASE_URL` to `<public-backend-url>`. Snapshot bootstrap additionally
+uses `SNAPSHOT_GITHUB_REPOSITORY`, `SNAPSHOT_GITHUB_REF` (pinned commit) and
+`SNAPSHOT_GITHUB_TOKEN` (private read-only secret). Never put credentials in VITE
+variables. See [Render settings](backend/DEPLOYMENT.md).
+
+Observed live health response on 17 November 2026:
+
+```json
+{"status":"ok","review_status":"phase_7b_reviewed"}
+```
+
+See live `/docs` for exact API schemas. Console routes under `/api/v1/live`
+include `/schema`, `/uploads`, `/jobs/{job_id}`, companion uploads at
+`/jobs/{job_id}/tables/{table}`, `/start`, `/cancel`, `/results`,
+`/players/{player_id}`, `/structured.csv` and `/rankings.csv` under the job path.
+Private jobs require `X-Analysis-Token`; DELETE on the job removes the session.
+
+Contributors are recorded in GitHub history. Organizer data and private snapshot
+files are not redistributed. Development assistance included Google AI Studio
+and Codex; analytical results must remain independently inspectable.
+
 > A visual cricket-intelligence frontend for inspected, aggregate pressure-performance evidence.
 
 <p align="center">
@@ -36,7 +94,7 @@ These are real local captures of the current frontend, made from the Vite develo
   <img src="docs/assets/strata-system-architecture.svg" alt="STRATA system architecture from frontend to read-only aggregate API" width="100%" />
 </p>
 
-The frontend and analytics service are deliberately separate. The public frontend owns presentation and typed request handling; the local aggregate API owns reviewed-output access and CORS enforcement. The analytical pipeline and proprietary raw source records remain outside this repository and outside the browser.
+The frontend and analytics service are deliberately separate. The public frontend owns presentation and typed request handling; the local aggregate API owns reviewed-output access and CORS enforcement. Recovered analytical code is included in backend/integration_api/recovered; proprietary source data remains private.
 
 <p align="center">
   <img src="docs/assets/strata-frontend-map.svg" alt="STRATA frontend component architecture" width="100%" />
@@ -54,7 +112,7 @@ Browser
      -> Phase 7B-reviewed aggregate publication boundary
 ```
 
-The browser requests only aggregate responses. It never receives raw ball-by-ball records, source file paths, raw `source_records`, valuations, eligibility assertions or proprietary data.
+Production ranking requests return aggregates. Owned Console sessions can return supporting records from the user-uploaded pack; they do not distribute the private approved snapshot.
 
 ### API contract used by the frontend
 
@@ -90,11 +148,11 @@ frontend/
 
 ### 1. Start the aggregate API
 
-The FastAPI service lives in the separate ClutchIQ backend workspace. From that workspace:
+The FastAPI service lives in backend/. From the repository root after creating a virtual environment and installing backend/requirements-test.txt:
 
 ```powershell
 $env:CLUTCHIQ_CORS_ORIGINS="http://localhost:3000"
-.\.venv\Scripts\python.exe -m uvicorn integration_api.app:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn integration_api.app:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
 ### 2. Configure and start this frontend
