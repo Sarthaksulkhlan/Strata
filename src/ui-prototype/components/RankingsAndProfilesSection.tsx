@@ -1,3 +1,4 @@
+import { approvedRankings } from '../../api/approvedRankings';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pin, Search, ShieldCheck, User } from 'lucide-react';
 import {
@@ -17,12 +18,6 @@ type Loadable = {
   data: Ranking[];
   loading: boolean;
   error: string | null;
-};
-
-const initial: Loadable = {
-  data: [],
-  loading: true,
-  error: null,
 };
 
 interface TableProps {
@@ -236,8 +231,8 @@ function Table({
 }
 
 export const RankingsAndProfilesSection: React.FC = () => {
-  const [batting, setBatting] = useState<Loadable>(initial);
-  const [bowling, setBowling] = useState<Loadable>(initial);
+  const batting: Loadable = { data: approvedRankings.batting, loading: false, error: null };
+  const bowling: Loadable = { data: approvedRankings.bowling, loading: false, error: null };
   const [query, setQuery] = useState('');
 
   // Floating hover & click-to-pin profile state
@@ -256,32 +251,6 @@ export const RankingsAndProfilesSection: React.FC = () => {
 
   useEffect(() => {
     preloadPlayerPortraits();
-    let active = true;
-    const load = async (
-      role: Role,
-      set: React.Dispatch<React.SetStateAction<Loadable>>
-    ) => {
-      try {
-        const result = await clutchIqApi.rankings(role);
-        if (active) {
-          // Preserve exact production ordering without sorting or mutating
-          set({ data: result.data, loading: false, error: null });
-        }
-      } catch (error) {
-        if (active) {
-          set({
-            data: [],
-            loading: false,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          });
-        }
-      }
-    };
-    void load('batting', setBatting);
-    void load('bowling', setBowling);
-    return () => {
-      active = false;
-    };
   }, []);
 
   const clearTimers = useCallback(() => {
@@ -522,7 +491,7 @@ export const RankingsAndProfilesSection: React.FC = () => {
         />
 
         <p className="text-xs font-mono-tabular text-[#64748B]">
-          Evidence bands and intervals accompany every verified result.
+          Approved snapshot rankings load instantly. Evidence bands and intervals accompany every result; detailed player evidence connects to the API.
         </p>
       </div>
 
